@@ -1,5 +1,6 @@
 flask==3.0.3
-litellm==1.44.0
+gunicorn==22.0.0
+litellm==1.44.1
 kafka-python==2.0.2
 prometheus-client==0.20.0
 pandas==2.2.2

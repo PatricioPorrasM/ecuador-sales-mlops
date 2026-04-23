@@ -404,7 +404,7 @@
   <div class="divider"></div>
   <div class="badge"><span class="pulse-dot"></span>Sistema activo</div>
   <div class="badge" style="border-color:var(--blue-dim);color:var(--blue)">
-    🤖 ReAct Agent · llama3-8b
+    🤖 ReAct Agent · llama-3.1-8b-instant
   </div>
   <div class="header-right">SRI Ecuador · Predicción de ventas · MLOps</div>
 </header>
@@ -416,15 +416,16 @@
     <h1 class="welcome-title">¿Qué deseas analizar hoy?</h1>
     <p class="welcome-sub">
       Pregunta en lenguaje natural sobre predicciones de ventas y exportaciones
-      de cualquier provincia del Ecuador, basadas en datos oficiales del SRI.
+      de cualquier provincia del Ecuador, basadas en datos oficiales del SRI.<br>
+      <strong style="color:var(--orange)">Horizonte válido: octubre 2025 — septiembre 2026</strong>
     </p>
     <div class="chips">
-      <div class="chip" onclick="useChip(this)">¿Cuánto venderá Guayas en julio?</div>
-      <div class="chip" onclick="useChip(this)">Predicción de ventas de Pichincha en marzo</div>
-      <div class="chip" onclick="useChip(this)">¿Cuál es la proyección de Azuay en diciembre?</div>
-      <div class="chip" onclick="useChip(this)">Ventas de sociedades en Manabí en junio</div>
-      <div class="chip" onclick="useChip(this)">¿Cuánto venderá Tungurahua en septiembre?</div>
-      <div class="chip" onclick="useChip(this)">Dame la predicción para El Oro en octubre</div>
+      <div class="chip" onclick="useChip(this)">¿Cuánto venderá Guayas en julio de 2026?</div>
+      <div class="chip" onclick="useChip(this)">Predicción de ventas de Pichincha en marzo de 2026</div>
+      <div class="chip" onclick="useChip(this)">¿Cuál es la proyección de Azuay en diciembre de 2025?</div>
+      <div class="chip" onclick="useChip(this)">Ventas de sociedades en Manabí en junio de 2026</div>
+      <div class="chip" onclick="useChip(this)">¿Cuánto venderá Tungurahua en febrero de 2026?</div>
+      <div class="chip" onclick="useChip(this)">Dame la predicción para El Oro en octubre de 2025</div>
     </div>
   </div>
 </div>
@@ -435,7 +436,7 @@
     <textarea
       id="q"
       rows="1"
-      placeholder="Ej: ¿Cuánto venderá Guayas en julio?"
+      placeholder="Ej: ¿Cuánto venderá Guayas en julio de 2026?"
       onkeydown="onKey(event)"
       oninput="resize(this)"
     ></textarea>

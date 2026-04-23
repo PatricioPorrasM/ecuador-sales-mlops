@@ -24,4 +24,5 @@ if __name__ == "__main__":
         csv_path=os.environ.get("DATA_PATH", DATA_PATH),
         output_dir=os.environ.get("MODEL_DIR", str(MODEL_DIR)),
     )
-    print(f"\nV1 training complete.  W&B run ID: {run_id}")
+    wandb_info = f"W&B run ID: {run_id}" if run_id else "W&B: omitido (sin API key o error de conexión)"
+    print(f"\nEntrenamiento V1 completo.  {wandb_info}")

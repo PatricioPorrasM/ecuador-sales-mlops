@@ -358,63 +358,74 @@ class SalesModelTrainer:
         logger.info("Model bundle saved → %s", path)
         return path
 
-    def log_to_wandb(self, model_path: Path) -> str:
+    def log_to_wandb(self, model_path: Path) -> str | None:
         """
-        Log the run to Weights & Biases:
-          - hyperparameters (config)
-          - train/test metrics
-          - feature importance table
-          - model artifact (with version alias)
+        Registra la ejecución en Weights & Biases: hiperparámetros, métricas,
+        importancia de features y artefacto del modelo.
 
-        Returns the W&B run ID.
+        Retorna el W&B run ID, o None si W&B no está disponible o falla.
+        El entrenamiento local NO se interrumpe por fallos de W&B.
         """
+        if not os.environ.get("WANDB_API_KEY"):
+            logger.info("WANDB_API_KEY no configurada — omitiendo logging a W&B.")
+            return None
+
         run_name = "v1-random-forest" if self.version == "v1" else "v2-xgboost"
 
-        run = wandb.init(
-            project=WANDB_PROJECT,
-            name=run_name,
-            tags=[self.version, "training"],
-            config=self._hparams(),
-        )
-
-        wandb.log(self.metrics)
-
-        importances = sorted(
-            zip(self.feature_cols, self.model.feature_importances_),
-            key=lambda x: x[1],
-            reverse=True,
-        )
-        wandb.log({
-            "feature_importance": wandb.Table(
-                columns=["feature", "importance"],
-                data=[[f, round(imp, 6)] for f, imp in importances],
+        try:
+            run = wandb.init(
+                project=WANDB_PROJECT,
+                name=run_name,
+                tags=[self.version, "training"],
+                config=self._hparams(),
             )
-        })
 
-        artifact = wandb.Artifact(
-            name=f"ecuador-sales-model-{self.version}",
-            type="model",
-            description=(
-                f"Ecuador SRI sales model {self.version.upper()} "
-                f"({self._hparams()['algorithm']})"
-            ),
-            metadata=self.metrics,
-        )
-        artifact.add_file(str(model_path))
-        run.log_artifact(artifact)
+            wandb.log(self.metrics)
 
-        run_id = run.id
-        wandb.finish()
+            importances = sorted(
+                zip(self.feature_cols, self.model.feature_importances_),
+                key=lambda x: x[1],
+                reverse=True,
+            )
+            wandb.log({
+                "feature_importance": wandb.Table(
+                    columns=["feature", "importance"],
+                    data=[[f, round(imp, 6)] for f, imp in importances],
+                )
+            })
 
-        logger.info("W&B run logged — id=%s  name=%s", run_id, run_name)
-        return run_id
+            artifact = wandb.Artifact(
+                name=f"ecuador-sales-model-{self.version}",
+                type="model",
+                description=(
+                    f"Ecuador SRI sales model {self.version.upper()} "
+                    f"({self._hparams()['algorithm']})"
+                ),
+                metadata=self.metrics,
+            )
+            artifact.add_file(str(model_path))
+            run.log_artifact(artifact)
+
+            run_id = run.id
+            wandb.finish()
+
+            logger.info("W&B run registrado — id=%s  nombre=%s", run_id, run_name)
+            return run_id
+
+        except Exception as exc:
+            logger.warning(
+                "No se pudo registrar en W&B (%s). "
+                "El modelo local fue guardado correctamente en %s.",
+                exc, model_path,
+            )
+            return None
 
     def run_pipeline(
         self,
         csv_path: str = DATA_PATH,
         output_dir: Path | str = MODEL_DIR,
-    ) -> str:
-        """Convenience: train → save → log to W&B. Returns the W&B run ID."""
+    ) -> str | None:
+        """Entrena → guarda → registra en W&B (opcional). Retorna el W&B run ID o None."""
         self.train(csv_path)
         model_path = self.save_model(output_dir)
         return self.log_to_wandb(model_path)

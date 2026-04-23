@@ -7,10 +7,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py agent.py tools.py kafka_producer.py metrics.py ./
 
-# SRI CSV data — mount the same directory used by the model-trainer service.
-# docker-compose: volumes: ["./services/model-trainer/data:/app/data:ro"]
-# K8s: mount a ConfigMap or a read-only PVC from the training job.
-# DATA_PATH env var overrides the default /app/data/Bdd_SRI_2025.csv.
+# Datos SRI — montados desde el directorio data/ en la raíz del repo.
+# docker-compose: volumes: ["./data:/app/data:ro"]
+# Kubernetes    : PVC de solo lectura montado en /app/data
+# DATA_PATH     : sobreescribe la ruta predeterminada /app/data/Bdd_SRI_2025.csv
 VOLUME ["/app/data"]
 
 EXPOSE 5001

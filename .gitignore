@@ -343,6 +343,40 @@ paket-files/
 **/__pycache__/
 *.pyc
 
+# ── Proyecto Ecuador Sales MLOps ─────────────────────────────────────────────
+
+# Variables de entorno (nunca commitear claves reales)
+.env
+
+# Dataset SRI — archivo grande, se gestiona fuera del repo
+data/
+
+# Modelos entrenados — se generan por el pipeline de entrenamiento
+models/
+services/*/models/
+*.pkl
+
+# Artefactos de pytest y cobertura
+.pytest_cache/
+**/.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# Directorios de entornos virtuales Python
+.venv/
+venv/
+env/
+
+# Eggs y builds de Python
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
 # Cake - Uncomment if you are using it
 #tools/**
 #!tools/packages.config

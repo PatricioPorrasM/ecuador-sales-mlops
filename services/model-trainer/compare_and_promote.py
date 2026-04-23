@@ -1,35 +1,41 @@
 #!/usr/bin/env python3
 """
-Compare v1 and v2 model artifacts in W&B and promote the winner to production.
+Compara los modelos v1 y v2 y promueve el ganador a producción.
 
-Promotion rule
-──────────────
-  v2 is promoted  if  test_rmse_v2 < test_rmse_v1 × PROMOTION_THRESHOLD
-                                                      (default 0.95 → ≥5% gain)
-  v1 is promoted  otherwise (baseline wins or improvement is marginal).
+Modos de operación
+──────────────────
+  Modo local (predeterminado):
+    Lee las métricas directamente desde los archivos pkl generados por
+    train_v1.py y train_v2.py en MODEL_DIR. No requiere W&B.
+    El ganador se copia como MODEL_DIR/model_production.pkl.
 
-The winning artifact receives the "production" alias in the W&B Model Registry
-and its .pkl file is copied to $MODEL_DIR/model_production.pkl, which is the
-path the ml-inference service reads on startup (shared PersistentVolumeClaim).
+  Modo W&B (cuando WANDB_API_KEY está configurada):
+    Adicionalmente registra el alias "production" en el registry de W&B.
+    Si W&B falla, recae automáticamente en el modo local.
 
-Environment variables
-─────────────────────
-  WANDB_PROJECT         W&B project name.            Default: ecuador-sales-mlops
-  WANDB_ENTITY          W&B entity (user/org).       Default: inferred from API key
-  MODEL_DIR             Output directory.            Default: /app/models
-  PROMOTION_THRESHOLD   RMSE ratio threshold.        Default: 0.95
-  WANDB_API_KEY         Required.
+Regla de promoción
+──────────────────
+  v2 se promueve  si  test_rmse_v2 < test_rmse_v1 × PROMOTION_THRESHOLD
+                                                      (default 0.95 → ≥5% mejora)
+  v1 se promueve  en caso contrario (baseline gana o la mejora es marginal).
+
+Variables de entorno
+────────────────────
+  WANDB_PROJECT         Nombre del proyecto W&B.     Default: ecuador-sales-mlops
+  WANDB_ENTITY          Entidad W&B (usuario/org).   Default: inferido desde API key
+  MODEL_DIR             Directorio de salida.        Default: /app/models
+  PROMOTION_THRESHOLD   Umbral de ratio RMSE.        Default: 0.95
+  WANDB_API_KEY         Opcional — habilita el modo W&B.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import pickle
 import shutil
 import sys
 from pathlib import Path
-
-import wandb
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,7 +44,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────
-# Configuration
+# Configuración
 # ─────────────────────────────────────────────────────────
 
 WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "ecuador-sales-mlops")
@@ -46,132 +52,134 @@ WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "")
 MODEL_DIR = Path(os.environ.get("MODEL_DIR", "/app/models"))
 PROMOTION_THRESHOLD = float(os.environ.get("PROMOTION_THRESHOLD", "0.95"))
 
-ARTIFACT_V1 = "ecuador-sales-model-v1"
-ARTIFACT_V2 = "ecuador-sales-model-v2"
-
 
 # ─────────────────────────────────────────────────────────
-# Helpers
+# Modo local — lee pkl desde disco
 # ─────────────────────────────────────────────────────────
 
-
-def _artifact_slug(name: str, alias: str = "latest") -> str:
-    if WANDB_ENTITY:
-        return f"{WANDB_ENTITY}/{WANDB_PROJECT}/{name}:{alias}"
-    return f"{WANDB_PROJECT}/{name}:{alias}"
-
-
-def fetch_artifact(api: wandb.Api, name: str) -> wandb.Artifact:
-    slug = _artifact_slug(name)
-    try:
-        artifact = api.artifact(slug)
-    except Exception as exc:
-        raise RuntimeError(
-            f"Cannot fetch artifact '{slug}'. "
-            f"Make sure both train_v1.py and train_v2.py have been run first.\n"
-            f"Original error: {exc}"
-        ) from exc
-
-    rmse = artifact.metadata.get("test_rmse")
-    logger.info("Fetched %-35s  test_rmse=%s", slug, f"{rmse:.4f}" if rmse is not None else "N/A")
-    return artifact
+def _load_bundle(version: str) -> dict:
+    """Carga el bundle pkl de un modelo desde MODEL_DIR."""
+    path = MODEL_DIR / f"model_{version}.pkl"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"No se encontró el modelo {version} en {path}. "
+            f"Asegúrate de que train_{version}.py haya terminado correctamente."
+        )
+    with open(path, "rb") as fh:
+        bundle = pickle.load(fh)
+    rmse = bundle["metrics"].get("test_rmse")
+    logger.info(
+        "Cargado %-20s  test_rmse=%s",
+        path.name,
+        f"{rmse:,.4f}" if rmse is not None else "N/A",
+    )
+    return bundle
 
 
-def promote(artifact: wandb.Artifact, version_label: str) -> None:
-    """Add the 'production' alias to the winning artifact in the W&B registry."""
-    if "production" not in artifact.aliases:
-        artifact.aliases.append("production")
-        artifact.save()
-        logger.info("Promoted %s → alias 'production' added", version_label)
+def _install_winner(version: str) -> Path:
+    """Copia model_{version}.pkl → model_production.pkl en MODEL_DIR."""
+    src = MODEL_DIR / f"model_{version}.pkl"
+    dest = MODEL_DIR / "model_production.pkl"
+    shutil.copy2(src, dest)
+    logger.info("Modelo de producción instalado → %s  (fuente: %s)", dest, src.name)
+    return dest
+
+
+def _local_promote() -> None:
+    """Compara métricas locales y promueve el ganador sin necesitar W&B."""
+    bundle_v1 = _load_bundle("v1")
+    bundle_v2 = _load_bundle("v2")
+
+    rmse_v1 = bundle_v1["metrics"]["test_rmse"]
+    rmse_v2 = bundle_v2["metrics"]["test_rmse"]
+
+    logger.info(
+        "Comparación — V1 RMSE: %,.4f  |  V2 RMSE: %,.4f  |  umbral: %.0f%%",
+        rmse_v1, rmse_v2, (1 - PROMOTION_THRESHOLD) * 100,
+    )
+
+    if rmse_v2 < rmse_v1 * PROMOTION_THRESHOLD:
+        winner_ver, loser_ver = "v2", "v1"
+        winner_label, loser_label = "V2 (XGBoost)", "V1 (RandomForest)"
+        winner_rmse, loser_rmse = rmse_v2, rmse_v1
+        improvement = (1 - rmse_v2 / rmse_v1) * 100
+        logger.info(
+            "→ %s GANA — %.1f%% de mejora en RMSE sobre %s",
+            winner_label, improvement, loser_label,
+        )
     else:
-        logger.info("%s already carries the 'production' alias; skipping update", version_label)
+        winner_ver, loser_ver = "v1", "v2"
+        winner_label, loser_label = "V1 (RandomForest)", "V2 (XGBoost)"
+        winner_rmse, loser_rmse = rmse_v1, rmse_v2
+        logger.info(
+            "→ %s GANA — V2 no alcanzó ≥%.0f%% de mejora (delta: %.2f%%)",
+            winner_label,
+            (1 - PROMOTION_THRESHOLD) * 100,
+            (rmse_v2 / rmse_v1 - 1) * 100,
+        )
+
+    prod_path = _install_winner(winner_ver)
+
+    print("\n" + "─" * 50)
+    print(f"  Ganador       : {winner_label}")
+    print(f"  RMSE ganador  : {winner_rmse:,.4f}")
+    print(f"  RMSE perdedor : {loser_rmse:,.4f}")
+    print(f"  Ruta modelo   : {prod_path}")
+    print("─" * 50)
 
 
-def download_and_install(artifact: wandb.Artifact) -> Path:
+# ─────────────────────────────────────────────────────────
+# Modo W&B — registra alias "production" en el registry
+# ─────────────────────────────────────────────────────────
+
+def _wandb_tag_winner(winner_label: str, winner_version: str) -> None:
     """
-    Download the artifact to a temp directory, copy the .pkl bundle to
-    MODEL_DIR/model_production.pkl, then clean up.
+    Añade el alias 'production' al artefacto ganador en el registry de W&B.
+    Falla silenciosamente si W&B no está disponible.
     """
-    tmp_dir = MODEL_DIR / "_download_tmp"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-
     try:
-        artifact.download(root=str(tmp_dir))
-        pkl_files = list(tmp_dir.glob("**/*.pkl"))
-        if not pkl_files:
-            raise RuntimeError(
-                f"No .pkl file found inside artifact '{artifact.name}'. "
-                "Verify that save_model() ran successfully during training."
-            )
-        src = pkl_files[0]
-        dest = MODEL_DIR / "model_production.pkl"
-        MODEL_DIR.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dest)
-        logger.info("Production model installed → %s  (source: %s)", dest, src.name)
-        return dest
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        import wandb
+
+        api = wandb.Api()
+        slug_parts = [WANDB_ENTITY, WANDB_PROJECT] if WANDB_ENTITY else [WANDB_PROJECT]
+        slug = "/".join(slug_parts + [f"ecuador-sales-model-{winner_version}:latest"])
+
+        artifact = api.artifact(slug)
+        if "production" not in artifact.aliases:
+            artifact.aliases.append("production")
+            artifact.save()
+            logger.info("W&B alias 'production' añadido a %s", slug)
+        else:
+            logger.info("Artefacto %s ya tiene el alias 'production'", slug)
+    except Exception as exc:
+        logger.warning("No se pudo actualizar el alias en W&B: %s", exc)
 
 
 # ─────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────
 
-
 def main() -> None:
-    if not os.environ.get("WANDB_API_KEY"):
-        logger.error("WANDB_API_KEY is not set. Cannot access the W&B registry.")
-        sys.exit(1)
+    """Punto de entrada: modo local siempre; W&B si WANDB_API_KEY está disponible."""
+    # Siempre ejecutar la comparación local (no depende de red)
+    _local_promote()
 
-    api = wandb.Api()
-
-    v1 = fetch_artifact(api, ARTIFACT_V1)
-    v2 = fetch_artifact(api, ARTIFACT_V2)
-
-    rmse_v1 = v1.metadata.get("test_rmse")
-    rmse_v2 = v2.metadata.get("test_rmse")
-
-    if rmse_v1 is None or rmse_v2 is None:
-        raise RuntimeError(
-            "test_rmse missing from artifact metadata. "
-            "Both models must complete training before running this script."
-        )
-
-    logger.info(
-        "Comparison — V1 RMSE: %.4f  |  V2 RMSE: %.4f  |  threshold: %.0f%%",
-        rmse_v1, rmse_v2, (1 - PROMOTION_THRESHOLD) * 100,
-    )
-
-    if rmse_v2 < rmse_v1 * PROMOTION_THRESHOLD:
-        winner, loser = v2, v1
-        winner_label, loser_label = "V2 (XGBoost)", "V1 (RandomForest)"
-        winner_rmse = rmse_v2
-        improvement_pct = (1 - rmse_v2 / rmse_v1) * 100
-        logger.info(
-            "→ %s WINS — %.1f%% RMSE improvement over %s",
-            winner_label, improvement_pct, loser_label,
-        )
+    # Intentar añadir alias en W&B de forma opcional
+    if os.environ.get("WANDB_API_KEY"):
+        logger.info("WANDB_API_KEY detectada — intentando actualizar alias en W&B…")
+        # Determinar ganador nuevamente para pasar a W&B
+        try:
+            bundle_v1 = _load_bundle("v1")
+            bundle_v2 = _load_bundle("v2")
+            rmse_v1 = bundle_v1["metrics"]["test_rmse"]
+            rmse_v2 = bundle_v2["metrics"]["test_rmse"]
+            winner_ver = "v2" if rmse_v2 < rmse_v1 * PROMOTION_THRESHOLD else "v1"
+            winner_label = "V2 (XGBoost)" if winner_ver == "v2" else "V1 (RandomForest)"
+            _wandb_tag_winner(winner_label, winner_ver)
+        except Exception as exc:
+            logger.warning("Fallo al actualizar W&B (no crítico): %s", exc)
     else:
-        winner, loser = v1, v2
-        winner_label, loser_label = "V1 (RandomForest)", "V2 (XGBoost)"
-        winner_rmse = rmse_v1
-        logger.info(
-            "→ %s WINS — V2 did not achieve ≥%.0f%% improvement (delta: %.2f%%)",
-            winner_label,
-            (1 - PROMOTION_THRESHOLD) * 100,
-            (rmse_v2 / rmse_v1 - 1) * 100,
-        )
-
-    promote(winner, winner_label)
-    prod_path = download_and_install(winner)
-
-    print("\n" + "─" * 50)
-    print(f"  Winner        : {winner_label}")
-    print(f"  Winner RMSE   : {winner_rmse:,.4f}")
-    print(f"  Loser RMSE    : {rmse_v2 if winner_label.startswith('V1') else rmse_v1:,.4f}")
-    print(f"  W&B alias     : production → {winner.name}:{winner.version}")
-    print(f"  Model path    : {prod_path}")
-    print("─" * 50)
+        logger.info("WANDB_API_KEY no configurada — omitiendo actualización de W&B.")
 
 
 if __name__ == "__main__":
