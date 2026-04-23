@@ -149,8 +149,12 @@ class SalesModelTrainer:
                         "province": prov,
                         "ano_fiscal": year,
                         "mes_fiscal": month,
-                        "exp_bienes_pn": _safe_float(row.get(f"{pfx}/PERSONAS NATURALES/EXPORTACIONES DE BIENES (417)")),
-                        "exp_servicios_pn": _safe_float(row.get(f"{pfx}/PERSONAS NATURALES/EXPORTACIONES DE SERVICIOS (418)")),
+                        "exp_bienes_pn": _safe_float(
+                            row.get(f"{pfx}/PERSONAS NATURALES/EXPORTACIONES DE BIENES (417)")
+                        ),
+                        "exp_servicios_pn": _safe_float(
+                            row.get(f"{pfx}/PERSONAS NATURALES/EXPORTACIONES DE SERVICIOS (418)")
+                        ),
                         "exp_bienes_soc": _safe_float(row.get(f"{pfx}/SOCIEDADES/EXPORTACIONES DE BIENES (417)")),
                         "exp_servicios_soc": _safe_float(row.get(f"{pfx}/SOCIEDADES/EXPORTACIONES DE SERVICIOS (418)")),
                         "target": _safe_float(row.get(f"{pfx}/SOCIEDADES/TOTAL VENTAS Y EXPORTACIONES (419)")),

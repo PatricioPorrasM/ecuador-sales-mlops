@@ -40,7 +40,7 @@
       "title": "Requests por Minuto — Todos los Servicios",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "expr": "sum(rate(web_requests_total[5m])) * 60",
@@ -82,7 +82,7 @@
       "title": "Latencia de Inferencia — P50 / P95 / P99",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "expr": "histogram_quantile(0.50, sum(rate(inference_latency_seconds_bucket[5m])) by (le))",
@@ -139,7 +139,7 @@
       "title": "Latencia End-to-End del Pipeline Completo — P50 / P95 / P99",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "description": "Medido desde que el ai-agent recibe la pregunta hasta que devuelve la respuesta final (incluye todas las llamadas LLM + ml-inference). Fuente: kafka-consumer procesando eventos agent-actions.",
       "targets": [
         {
@@ -197,7 +197,7 @@
       "title": "Predicciones por Provincia — Top 5",
       "type": "bargauge",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "expr": "topk(5, sort_desc(sum by(provincia) (requests_by_provincia_total)))",
@@ -241,7 +241,7 @@
       "title": "Distribución de Valores Predichos por Provincia",
       "type": "table",
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "description": "Último valor predicho de ventas societarias por provincia (USD)",
       "targets": [
         {
@@ -292,7 +292,7 @@
       "title": "Score de Confianza del Modelo",
       "type": "gauge",
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "description": "Percentil 50 de la distribución de scores de confianza en la ventana reciente. RF: varianza entre árboles. XGBoost: test_r2 del entrenamiento.",
       "targets": [
         {
@@ -341,7 +341,7 @@
       "title": "Kafka Consumer Lag por Topic",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "description": "Lag = end_offset − current_position. Zero = consumer está al día. Actualizado cada 30 s por el consumer.",
       "targets": [
         {
@@ -383,7 +383,7 @@
       "title": "Mensajes Kafka Consumidos por Topic (por Minuto)",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "expr": "rate(kafka_messages_consumed_total{topic=\"user-requests\"}[5m]) * 60",
@@ -426,7 +426,7 @@
       "title": "CPU y Memoria por Proceso",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "expr": "rate(process_cpu_seconds_total{job=\"web-ui\"}[5m]) * 100",
@@ -507,7 +507,7 @@
       "title": "Tasa de Errores por Servicio",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 32 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "description": "Proporción de requests que terminan en error. Verde = 0%. Alerta recomendada > 5%.",
       "targets": [
         {
