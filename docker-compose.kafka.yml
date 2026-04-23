@@ -1,0 +1,116 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Kafka + Zookeeper — isolated stack for local development
+#
+# Usage:
+#   docker compose -f docker-compose.kafka.yml up -d
+#   docker compose -f docker-compose.kafka.yml down -v   # destroy volumes too
+#
+# Ports exposed to the host:
+#   9092  — Kafka internal listener  (used by all Docker services)
+#   29092 — Kafka external listener  (used by tools running on the host)
+#   2181  — Zookeeper (for debugging)
+#
+# Broker address inside Docker:    kafka:9092
+# Broker address from host:        localhost:29092
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper
+    hostname: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_SYNC_LIMIT: 2
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep -q imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    restart: unless-stopped
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    hostname: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"     # internal — Docker services use kafka:9092
+      - "29092:29092"   # external — host tools use localhost:29092
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+
+      # Two listeners: one for container-to-container, one for host access
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # Single-broker settings (replication factor = 1)
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"   # topics created explicitly below
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 100
+      KAFKA_LOG_RETENTION_HOURS: 168             # 7-day retention
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 15s
+      timeout: 15s
+      retries: 12
+      start_period: 60s
+    restart: unless-stopped
+
+  # One-shot init container that creates the three application topics.
+  # Runs once, exits with code 0, and is never restarted.
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        B=kafka:9092
+
+        echo "=== Creating application topics on $${B} ==="
+
+        kafka-topics --bootstrap-server $${B} \
+          --create --if-not-exists \
+          --topic user-requests \
+          --partitions 1 --replication-factor 1 \
+          --config retention.ms=604800000
+
+        kafka-topics --bootstrap-server $${B} \
+          --create --if-not-exists \
+          --topic agent-actions \
+          --partitions 1 --replication-factor 1 \
+          --config retention.ms=604800000
+
+        kafka-topics --bootstrap-server $${B} \
+          --create --if-not-exists \
+          --topic model-responses \
+          --partitions 1 --replication-factor 1 \
+          --config retention.ms=604800000
+
+        echo ""
+        echo "=== Topics created — current state ==="
+        kafka-topics --bootstrap-server $${B} --describe \
+          --topic user-requests,agent-actions,model-responses
+    restart: "no"
+
+networks:
+  default:
+    name: mlops-network
+    driver: bridge

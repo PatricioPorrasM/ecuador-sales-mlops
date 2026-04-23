@@ -1,0 +1,98 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# ai-agent — ReAct agent (LiteLLM + Groq llama3-8b-8192)
+# Namespace: agent
+#
+# Exposes:
+#   POST /ask       — accepts {pregunta, session_id}, returns agent response
+#   GET  /health    — liveness probe
+#   GET  /ready     — readiness probe
+#   GET  /metrics   — Prometheus metrics
+#
+# Requires:
+#   - GROQ_API_KEY from Secret api-keys
+#   - ML_INFERENCE_URL pointing to ml-inference.inference.svc.cluster.local
+#   - DATA_PATH: CSV baked into the image at /app/data/Bdd_SRI_2025.csv
+# ──────────────────────────────────────────────────────────────────────────────
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-agent
+  namespace: agent
+  labels:
+    app: ai-agent
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-agent
+  template:
+    metadata:
+      labels:
+        app: ai-agent
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5001"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: ai-agent
+          image: ecuador-sales/ai-agent:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 5001
+
+          envFrom:
+            - configMapRef:
+                name: app-config
+
+          env:
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-keys
+                  key: GROQ_API_KEY
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5001
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 5
+
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 5001
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 6
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-agent
+  namespace: agent
+  labels:
+    app: ai-agent
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 5001
+      targetPort: 5001
+  selector:
+    app: ai-agent

@@ -1,0 +1,101 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# ml-inference — Flask prediction API
+# Namespace: inference
+#
+# Exposes:
+#   POST /predict   — sales prediction with confidence score
+#   GET  /health    — liveness probe
+#   GET  /ready     — readiness probe (200 only when model pkl is loaded)
+#   GET  /metrics   — Prometheus metrics
+#
+# The model pkl is read from the shared PVC (models-pvc) at MODEL_PATH.
+# If the model is not yet present (first boot before training), /ready returns
+# 503 and the pod stays out of rotation until the file appears.
+# ──────────────────────────────────────────────────────────────────────────────
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-inference
+  namespace: inference
+  labels:
+    app: ml-inference
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ml-inference
+  template:
+    metadata:
+      labels:
+        app: ml-inference
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: ml-inference
+          image: ecuador-sales/ml-inference:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 5000
+
+          envFrom:
+            - configMapRef:
+                name: app-config
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 5
+
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 5000
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 10
+            timeoutSeconds: 5
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+          volumeMounts:
+            - name: models
+              mountPath: /app/models
+              readOnly: true
+
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: models-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-inference
+  namespace: inference
+  labels:
+    app: ml-inference
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+  selector:
+    app: ml-inference

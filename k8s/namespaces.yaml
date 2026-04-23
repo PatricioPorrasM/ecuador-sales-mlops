@@ -1,0 +1,67 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Kubernetes namespaces for the Ecuador Sales MLOps platform
+#
+# Apply first:
+#   kubectl apply -f k8s/namespaces.yaml
+#
+# Namespace layout:
+#   streaming   — Kafka + Zookeeper + kafka-consumer
+#   frontend    — web-ui chat interface
+#   agent       — ai-agent (ReAct + LiteLLM)
+#   inference   — ml-inference (Flask predict API)
+#   monitoring  — Prometheus + Grafana observability stack
+#   training    — model-trainer (runs as a one-shot Job)
+# ──────────────────────────────────────────────────────────────────────────────
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: streaming
+  labels:
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+    app.kubernetes.io/component: messaging
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: frontend
+  labels:
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+    app.kubernetes.io/component: web
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent
+  labels:
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+    app.kubernetes.io/component: ai-agent
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: inference
+  labels:
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+    app.kubernetes.io/component: ml-inference
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+    app.kubernetes.io/component: observability
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: training
+  labels:
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+    app.kubernetes.io/component: model-training

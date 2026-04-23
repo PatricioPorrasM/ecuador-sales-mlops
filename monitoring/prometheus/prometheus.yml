@@ -1,0 +1,75 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Prometheus configuration — Ecuador Sales MLOps
+#
+# Scrape targets (Docker Compose service names resolve inside mlops-network):
+#   web-ui         :5000/metrics   — web_requests_total, web_chat_latency_seconds
+#   ai-agent       :8001/metrics   — agent_requests_total, agent_latency_seconds,
+#                                    agent_llm_calls_total, agent_tool_calls_total
+#   ml-inference   :8002/metrics   — inference_requests_total, inference_latency_seconds,
+#                                    model_prediction_value, model_confidence_score,
+#                                    model_version_info
+#   kafka-consumer :8003/metrics   — kafka_messages_consumed_total, kafka_consumer_lag,
+#                                    pipeline_end_to_end_latency_seconds,
+#                                    requests_by_provincia
+#
+# For Kubernetes deployment, the same config is embedded in
+# k8s/monitoring/prometheus.yaml (ConfigMap), with FQDN service addresses.
+# ──────────────────────────────────────────────────────────────────────────────
+
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  external_labels:
+    project: ecuador-sales-mlops
+    env:     local
+
+# ── Alerting rules (extend as needed) ────────────────────────────────────────
+rule_files: []
+
+# ── Scrape configurations ─────────────────────────────────────────────────────
+scrape_configs:
+
+  # Self-monitoring
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]
+
+  # ── Web UI ────────────────────────────────────────────────────────────────
+  - job_name: web-ui
+    scrape_interval: 15s
+    metrics_path: /metrics
+    static_configs:
+      - targets: [web-ui:5000]
+        labels:
+          service: web-ui
+          namespace: frontend
+
+  # ── AI Agent ──────────────────────────────────────────────────────────────
+  - job_name: ai-agent
+    scrape_interval: 15s
+    metrics_path: /metrics
+    static_configs:
+      - targets: [ai-agent:8001]
+        labels:
+          service: ai-agent
+          namespace: agent
+
+  # ── ML Inference ──────────────────────────────────────────────────────────
+  - job_name: ml-inference
+    scrape_interval: 15s
+    metrics_path: /metrics
+    static_configs:
+      - targets: [ml-inference:8002]
+        labels:
+          service: ml-inference
+          namespace: inference
+
+  # ── Kafka Consumer ────────────────────────────────────────────────────────
+  - job_name: kafka-consumer
+    scrape_interval: 15s
+    metrics_path: /metrics
+    static_configs:
+      - targets: [kafka-consumer:8003]
+        labels:
+          service: kafka-consumer
+          namespace: streaming

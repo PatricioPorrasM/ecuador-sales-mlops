@@ -1,0 +1,107 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Kafka Topics Init Job
+# Namespace: streaming
+#
+# Creates the three application topics once Kafka is ready.
+# Must be applied AFTER the Kafka StatefulSet is Running and Healthy.
+#
+# Apply order:
+#   kubectl apply -f k8s/namespaces.yaml
+#   kubectl apply -f k8s/kafka/zookeeper.yaml
+#   kubectl apply -f k8s/kafka/kafka.yaml
+#   kubectl wait --for=condition=ready pod -l app=kafka -n streaming --timeout=180s
+#   kubectl apply -f k8s/kafka/topics-job.yaml
+#
+# Topics created:
+#   user-requests    partitions=1  replication=1  retention=7d
+#   agent-actions    partitions=1  replication=1  retention=7d
+#   model-responses  partitions=1  replication=1  retention=7d
+#
+# The Job is cleaned up automatically 5 minutes after completion (ttlSecondsAfterFinished).
+# ──────────────────────────────────────────────────────────────────────────────
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-topics-init
+  namespace: streaming
+  labels:
+    app: kafka-topics-init
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 300   # auto-delete pod/job 5 min after completion
+  template:
+    metadata:
+      labels:
+        app: kafka-topics-init
+    spec:
+      restartPolicy: OnFailure
+
+      # Wait until Kafka port is open before running the topic creation container
+      initContainers:
+        - name: wait-for-kafka
+          image: busybox:1.36
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for Kafka at kafka-service.streaming.svc.cluster.local:9092..."
+              until nc -z kafka-service.streaming.svc.cluster.local 9092; do
+                echo "  Kafka not ready — retrying in 5s"
+                sleep 5
+              done
+              echo "Kafka is reachable."
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+
+      containers:
+        - name: topics-creator
+          image: confluentinc/cp-kafka:7.6.0
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              B=kafka-service.streaming.svc.cluster.local:9092
+
+              create_topic() {
+                local topic=$1 parts=$2 rep=$3
+                kafka-topics --bootstrap-server $B \
+                  --create --if-not-exists \
+                  --topic "$topic" \
+                  --partitions $parts \
+                  --replication-factor $rep \
+                  --config retention.ms=604800000
+                echo "  ✓ $topic (partitions=$parts, replication=$rep)"
+              }
+
+              echo "=== Creating application topics ==="
+              create_topic user-requests   1 1
+              create_topic agent-actions   1 1
+              create_topic model-responses 1 1
+
+              echo ""
+              echo "=== Final topic list ==="
+              kafka-topics --bootstrap-server $B --list
+
+              echo ""
+              echo "=== Topic details ==="
+              kafka-topics --bootstrap-server $B \
+                --describe \
+                --topic user-requests,agent-actions,model-responses
+
+              echo ""
+              echo "All topics created successfully."
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 250m
+              memory: 512Mi

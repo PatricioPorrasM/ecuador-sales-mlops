@@ -1,0 +1,91 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# web-ui — dark terminal-style chat interface
+# Namespace: frontend
+#
+# Exposes:
+#   GET  /          — chat UI
+#   POST /ask       — proxy to ai-agent /ask
+#   GET  /health    — liveness probe
+#   GET  /metrics   — Prometheus metrics
+#
+# NodePort 30500 → access via:
+#   http://$(minikube ip):30500
+# ──────────────────────────────────────────────────────────────────────────────
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-ui
+  namespace: frontend
+  labels:
+    app: web-ui
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web-ui
+  template:
+    metadata:
+      labels:
+        app: web-ui
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5002"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: web-ui
+          image: ecuador-sales/web-ui:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 5002
+
+          envFrom:
+            - configMapRef:
+                name: app-config
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5002
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 5
+
+          # web-ui has no /ready — use /health for readiness too
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5002
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 6
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-ui
+  namespace: frontend
+  labels:
+    app: web-ui
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 5002
+      targetPort: 5002
+      nodePort: 30500
+  selector:
+    app: web-ui

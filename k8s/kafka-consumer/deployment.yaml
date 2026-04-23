@@ -1,0 +1,88 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# kafka-consumer — Kafka topic consumer + Prometheus metrics exporter
+# Namespace: streaming
+#
+# Consumes:
+#   user-requests    → request counters by province + model_version
+#   agent-actions    → end-to-end latency, province distribution
+#   model-responses  → prediction value distribution histogram
+#
+# Exposes:
+#   :8003/metrics   — Prometheus text format (prometheus_client start_http_server)
+#
+# No /health endpoint — liveness is via TCP socket on 8003.
+# ──────────────────────────────────────────────────────────────────────────────
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-consumer
+  namespace: streaming
+  labels:
+    app: kafka-consumer
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-consumer
+  template:
+    metadata:
+      labels:
+        app: kafka-consumer
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8003"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: kafka-consumer
+          image: ecuador-sales/kafka-consumer:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 8003
+
+          envFrom:
+            - configMapRef:
+                name: app-config
+
+          livenessProbe:
+            tcpSocket:
+              port: 8003
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 5
+
+          readinessProbe:
+            tcpSocket:
+              port: 8003
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 6
+
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-consumer
+  namespace: streaming
+  labels:
+    app: kafka-consumer
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: 8003
+      targetPort: 8003
+  selector:
+    app: kafka-consumer

@@ -1,0 +1,135 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# model-trainer — one-shot training Job
+# Namespace: training
+#
+# Pipeline (sequential via initContainers):
+#   1. train-v1    → trains RandomForest, logs to W&B, saves v1 pkl
+#   2. train-v2    → trains XGBoost, logs to W&B, saves v2 pkl
+#   3. compare     → (main container) fetches both W&B artifacts, compares
+#                    RMSE, promotes winner with alias "production",
+#                    copies winner pkl → /app/models/model_production.pkl
+#
+# The /app/models volume (models-pvc) is shared with ml-inference (inference ns)
+# via a HostPath PV pointing at the same Minikube node directory.
+#
+# Run:
+#   kubectl apply -f k8s/training/model-trainer-job.yaml
+# Monitor:
+#   kubectl logs -n training job/model-trainer -c train-v1 -f
+#   kubectl logs -n training job/model-trainer -c train-v2 -f
+#   kubectl logs -n training job/model-trainer -c compare-and-promote -f
+# ──────────────────────────────────────────────────────────────────────────────
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: model-trainer
+  namespace: training
+  labels:
+    app: model-trainer
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600    # auto-delete 10 min after completion
+  template:
+    metadata:
+      labels:
+        app: model-trainer
+    spec:
+      restartPolicy: OnFailure
+
+      # ── initContainers run sequentially; each must exit 0 before the next starts
+      initContainers:
+
+        # Step 1 — Train RandomForest (v1)
+        - name: train-v1
+          image: ecuador-sales/model-trainer:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "train_v1.py"]
+
+          envFrom:
+            - configMapRef:
+                name: app-config
+
+          env:
+            - name: WANDB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-keys
+                  key: WANDB_API_KEY
+
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1500m"
+              memory: "1Gi"
+
+          volumeMounts:
+            - name: models
+              mountPath: /app/models
+
+        # Step 2 — Train XGBoost (v2)
+        - name: train-v2
+          image: ecuador-sales/model-trainer:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "train_v2.py"]
+
+          envFrom:
+            - configMapRef:
+                name: app-config
+
+          env:
+            - name: WANDB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-keys
+                  key: WANDB_API_KEY
+
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1500m"
+              memory: "1Gi"
+
+          volumeMounts:
+            - name: models
+              mountPath: /app/models
+
+      # ── Main container — compare and promote winner to production ─────────
+      containers:
+        - name: compare-and-promote
+          image: ecuador-sales/model-trainer:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "compare_and_promote.py"]
+
+          envFrom:
+            - configMapRef:
+                name: app-config
+
+          env:
+            - name: WANDB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-keys
+                  key: WANDB_API_KEY
+
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+          volumeMounts:
+            - name: models
+              mountPath: /app/models
+
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: models-pvc

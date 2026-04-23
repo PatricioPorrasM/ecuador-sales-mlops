@@ -1,0 +1,95 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Shared model storage — PersistentVolumes + PersistentVolumeClaims
+#
+# Problem: PVCs are namespace-scoped, but model-trainer (training ns) must
+# write the same pkl files that ml-inference (inference ns) reads.
+#
+# Minikube solution: two PVs backed by the SAME hostPath directory.
+# Since Minikube is a single node, both pods physically access the same
+# /mnt/data/ecuador-models directory on the node.
+#
+# Do NOT use this approach in multi-node clusters — use NFS or a CSI driver.
+#
+# One-time setup on Minikube node:
+#   minikube ssh -- sudo mkdir -p /mnt/data/ecuador-models
+#
+# Apply:
+#   kubectl apply -f k8s/pvc-models.yaml
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── PV for inference namespace ────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: models-pv-inference
+  labels:
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+    role: model-storage
+    for-namespace: inference
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 2Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /mnt/data/ecuador-models
+    type: DirectoryOrCreate
+
+---
+# ── PVC in inference namespace ────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models-pvc
+  namespace: inference
+  labels:
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+spec:
+  storageClassName: manual
+  volumeName: models-pv-inference   # direct binding — no dynamic provisioning
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+
+---
+# ── PV for training namespace (same hostPath as above — Minikube only) ────────
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: models-pv-training
+  labels:
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+    role: model-storage
+    for-namespace: training
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 2Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /mnt/data/ecuador-models
+    type: DirectoryOrCreate
+
+---
+# ── PVC in training namespace ─────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models-pvc
+  namespace: training
+  labels:
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+spec:
+  storageClassName: manual
+  volumeName: models-pv-training    # direct binding — no dynamic provisioning
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi

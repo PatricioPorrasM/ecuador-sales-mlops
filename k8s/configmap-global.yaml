@@ -1,0 +1,82 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Per-namespace ConfigMaps — application configuration
+#
+# Each namespace gets an `app-config` ConfigMap with the env vars its
+# service(s) need.  All cross-namespace addresses use Kubernetes FQDN so that
+# services can reach each other regardless of the calling namespace.
+#
+# Apply:
+#   kubectl apply -f k8s/configmap-global.yaml
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── frontend namespace (web-ui) ───────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: frontend
+  labels:
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+data:
+  AI_AGENT_URL: "http://ai-agent.agent.svc.cluster.local:5001"
+  AGENT_TIMEOUT_SECS: "120"
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-service.streaming.svc.cluster.local:9092"
+
+---
+# ── agent namespace (ai-agent) ────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: agent
+  labels:
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+data:
+  ML_INFERENCE_URL: "http://ml-inference.inference.svc.cluster.local:5000"
+  INFERENCE_TIMEOUT_SECS: "10"
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-service.streaming.svc.cluster.local:9092"
+  LITELLM_MODEL: "groq/llama3-8b-8192"
+  AGENT_MAX_ITERATIONS: "8"
+  DATA_PATH: "/app/data/Bdd_SRI_2025.csv"
+
+---
+# ── inference namespace (ml-inference) ───────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: inference
+  labels:
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+data:
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-service.streaming.svc.cluster.local:9092"
+  MODEL_PATH: "/app/models/model_production.pkl"
+
+---
+# ── streaming namespace (kafka-consumer) ─────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: streaming
+  labels:
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+data:
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-service.streaming.svc.cluster.local:9092"
+  METRICS_PORT: "8003"
+  LAG_UPDATE_SECS: "30"
+
+---
+# ── training namespace (model-trainer Job) ────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: training
+  labels:
+    app.kubernetes.io/part-of: ecuador-sales-mlops
+data:
+  MODEL_DIR: "/app/models"
+  DATA_PATH: "/app/data/Bdd_SRI_2025.csv"
+  WANDB_PROJECT: "ecuador-sales-mlops"
+  PROMOTION_THRESHOLD: "0.95"
