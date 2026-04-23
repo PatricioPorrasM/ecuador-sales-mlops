@@ -1,9 +1,9 @@
 """
-Kafka producer for the ai-agent service.
+Productor Kafka para el servicio ai-agent.
 
-Publishes agent action events to the 'agent-actions' topic.
-Degrades gracefully if Kafka is unavailable — the agent response is
-never blocked by a Kafka failure.
+Publica eventos de acciones del agente en el topic 'agent-actions'.
+Degrada de forma segura si Kafka no está disponible — la respuesta del agente
+nunca se bloquea por un fallo de Kafka.
 """
 
 from __future__ import annotations
@@ -26,6 +26,10 @@ _producer: KafkaProducer | None = None
 
 
 def _get_producer() -> KafkaProducer | None:
+    """Retorna el productor en caché, creándolo en la primera llamada.
+
+    Retorna None si Kafka no está disponible.
+    """
     global _producer
     if _producer is not None:
         return _producer
@@ -39,11 +43,11 @@ def _get_producer() -> KafkaProducer | None:
             request_timeout_ms=5000,
             api_version_auto_timeout_ms=5000,
         )
-        logger.info("Kafka producer connected → %s", KAFKA_BOOTSTRAP_SERVERS)
+        logger.info("Productor Kafka conectado → %s", KAFKA_BOOTSTRAP_SERVERS)
     except (NoBrokersAvailable, KafkaError) as exc:
         logger.warning(
-            "Kafka unavailable (%s) — agent events will not be streamed. "
-            "Service continues operating normally.",
+            "Kafka no disponible (%s) — los eventos del agente no serán transmitidos. "
+            "El servicio continúa operando normalmente.",
             exc,
         )
     return _producer
@@ -58,8 +62,8 @@ def publish_agent_action(
     latencia_agente_ms: float,
 ) -> None:
     """
-    Publish an agent action event to the 'agent-actions' topic.
-    Failures are logged as warnings and never propagated to callers.
+    Publica un evento de acción del agente en el topic 'agent-actions'.
+    Los errores se registran como advertencias y nunca se propagan al llamador.
     """
     producer = _get_producer()
     if producer is None:
@@ -79,6 +83,6 @@ def publish_agent_action(
         future = producer.send(TOPIC, value=event)
         producer.flush(timeout=2.0)
         future.get(timeout=2.0)
-        logger.debug("Published agent-action event for %s/%d", provincia_extraida, mes_extraido)
+        logger.debug("Evento agent-action publicado — %s/%d", provincia_extraida, mes_extraido)
     except KafkaError as exc:
-        logger.warning("Failed to publish agent action to Kafka: %s", exc)
+        logger.warning("Error al publicar evento de acción del agente en Kafka: %s", exc)

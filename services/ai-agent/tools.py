@@ -1,23 +1,23 @@
 """
-Tool implementations for the ReAct agent.
+Implementación de herramientas para el agente ReAct.
 
-Two tools are exposed:
+Se exponen dos herramientas:
 
   get_province_data(provincia, mes)
-    Reads the SRI CSV and returns the most recent export feature values
-    for the requested (province, month) pair.  These are the features
-    the inference model expects as input.
+    Lee el CSV del SRI y retorna los valores de features de exportación más
+    recientes para el par (provincia, mes) solicitado. Estos son los features
+    que el modelo de inferencia espera como entrada.
 
   call_inference(provincia, mes, exp_bienes_pn, ...)
-    HTTP POST to the ml-inference /predict endpoint and returns the
-    full prediction response.
+    HTTP POST al endpoint /predict de ml-inference y retorna la respuesta
+    completa de predicción.
 
-The CSV is loaded once at first call and cached in memory for subsequent
-requests (LRU cache on _load_wide_df).
+El CSV se carga una sola vez en la primera llamada y se almacena en caché
+para solicitudes posteriores (caché LRU sobre _load_wide_df).
 
-Province name matching is ASCII-normalised on both sides so that names like
-"Guayas", "guayas", "GUAYAS" all resolve correctly regardless of the
-encoding used to store the CSV column headers.
+La coincidencia de nombres de provincias se normaliza a ASCII en ambos lados
+para que nombres como "Guayas", "guayas", "GUAYAS" se resuelvan correctamente
+independientemente de la codificación usada en las cabeceras del CSV.
 """
 
 from __future__ import annotations
@@ -38,6 +38,69 @@ logger = logging.getLogger(__name__)
 DATA_PATH = Path(os.environ.get("DATA_PATH", "/app/data/Bdd_SRI_2025.csv"))
 ML_INFERENCE_URL: str = os.environ.get("ML_INFERENCE_URL", "http://ml-inference:5000")
 INFERENCE_TIMEOUT: int = int(os.environ.get("INFERENCE_TIMEOUT_SECS", "10"))
+
+# ── Temporal validation ───────────────────────────────────────────────────────
+# Dataset covers Jan 2020 (record 1) to Sep 2025 (record 69).
+# Year/month derived from row index: year = 2020 + (idx // 12), month = idx % 12 + 1
+# First predictable month: October 2025.
+CUTOFF_YEAR: int = 2025
+CUTOFF_MONTH: int = 9                            # Sep 2025 — last dataset record
+PREDICTION_START_YEAR: int = 2025
+PREDICTION_START_MONTH: int = 10                 # Oct 2025 — first valid prediction
+MAX_PREDICTION_MONTHS: int = int(os.environ.get("MAX_PREDICTION_MONTHS", "12"))
+
+_MESES_ES = {
+    1: "enero", 2: "febrero", 3: "marzo", 4: "abril",
+    5: "mayo", 6: "junio", 7: "julio", 8: "agosto",
+    9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre",
+}
+
+
+def _mes_nombre(mes: int) -> str:
+    """Retorna el nombre del mes en español para un número de mes dado."""
+    return _MESES_ES.get(mes, str(mes))
+
+
+def _prediction_window() -> tuple[int, int, int, int]:
+    """Retorna (año_inicio, mes_inicio, año_fin, mes_fin) de la ventana de predicción válida."""
+    start_total = PREDICTION_START_YEAR * 12 + PREDICTION_START_MONTH
+    end_total = start_total + MAX_PREDICTION_MONTHS - 1
+    end_year, end_month = divmod(end_total, 12)
+    if end_month == 0:          # divmod(N*12, 12) gives remainder 0 → December of prior year
+        end_year -= 1
+        end_month = 12
+    return PREDICTION_START_YEAR, PREDICTION_START_MONTH, end_year, end_month
+
+
+def validate_prediction_date(ano: int, mes: int) -> str | None:
+    """
+    Valida que (ano, mes) esté dentro de la ventana de predicción permitida.
+
+    Retorna None si la fecha es válida.
+    Retorna un mensaje de error en español si no lo es, para que el agente
+    lo transmita al usuario sin llamar nunca al servicio de inferencia ML.
+    """
+    sy, sm, ey, em = _prediction_window()
+    req = ano * 12 + mes
+    start = sy * 12 + sm
+    end = ey * 12 + em
+
+    limite = f"{_mes_nombre(em)} de {ey}"
+    if req < start:
+        return (
+            f"No es posible predecir {_mes_nombre(mes)} de {ano}. "
+            f"El dataset del SRI cubre hasta septiembre 2025 (registro 69/69); "
+            f"el primer mes predecible es octubre 2025. "
+            f"Solicita una fecha entre octubre 2025 y {limite}."
+        )
+    if req > end:
+        return (
+            f"No es posible predecir {_mes_nombre(mes)} de {ano}. "
+            f"El horizonte máximo es {limite} "
+            f"({MAX_PREDICTION_MONTHS} meses desde octubre 2025). "
+            f"Solicita una fecha dentro del rango: octubre 2025 — {limite}."
+        )
+    return None
 
 
 # ─────────────────────────────────────────────────────────
@@ -82,8 +145,9 @@ TOOLS: list[dict] = [
             "name": "call_inference",
             "description": (
                 "Call the ML inference service to obtain a sales prediction for a "
-                "province and month. Use the feature values returned by "
-                "get_province_data as arguments."
+                "province, month and year. Validates that the requested date falls "
+                "within the predictable window (Oct 2025 onwards) before calling "
+                "the model. Use the feature values returned by get_province_data."
             ),
             "parameters": {
                 "type": "object",
@@ -97,6 +161,15 @@ TOOLS: list[dict] = [
                         "description": "Month number (1–12).",
                         "minimum": 1,
                         "maximum": 12,
+                    },
+                    "ano": {
+                        "type": "integer",
+                        "description": (
+                            "Year of the prediction (e.g. 2025, 2026). "
+                            "Must be strictly after September 2025."
+                        ),
+                        "minimum": 2025,
+                        "maximum": 2030,
                     },
                     "exportaciones_bienes_pn": {
                         "type": "number",
@@ -116,7 +189,7 @@ TOOLS: list[dict] = [
                     },
                 },
                 "required": [
-                    "provincia", "mes",
+                    "provincia", "mes", "ano",
                     "exportaciones_bienes_pn", "exportaciones_servicios_pn",
                     "exportaciones_bienes_soc", "exportaciones_servicios_soc",
                 ],
@@ -132,7 +205,7 @@ TOOLS: list[dict] = [
 
 
 def _ascii_upper(s: str) -> str:
-    """Strip diacritics and uppercase for robust column matching."""
+    """Elimina diacríticos y convierte a mayúsculas para una comparación robusta de columnas."""
     return (
         unicodedata.normalize("NFKD", s)
         .encode("ascii", "ignore")
@@ -144,7 +217,7 @@ def _ascii_upper(s: str) -> str:
 
 @lru_cache(maxsize=1)
 def _load_wide_df() -> pd.DataFrame:
-    """Load the SRI CSV once and cache it in memory."""
+    """Carga el CSV del SRI una sola vez y lo almacena en caché en memoria."""
     for enc in ("utf-8-sig", "latin-1", "cp1252"):
         try:
             df = pd.read_csv(DATA_PATH, encoding=enc)
@@ -161,8 +234,9 @@ def _load_wide_df() -> pd.DataFrame:
 
 def _find_csv_prefix(df: pd.DataFrame, provincia: str) -> str | None:
     """
-    Return the actual CSV column prefix (e.g. 'GUAYAS') for a province.
-    Matching is done after ASCII-normalisation so encoding issues are invisible.
+    Retorna el prefijo real de columna en el CSV (p.ej. 'GUAYAS') para una provincia.
+    La comparación se hace tras normalización ASCII para que los problemas de
+    codificación sean invisibles.
     """
     norm = _ascii_upper(provincia)
     seen: set[str] = set()
@@ -178,6 +252,7 @@ def _find_csv_prefix(df: pd.DataFrame, provincia: str) -> str | None:
 
 
 def _safe_float(value: Any) -> float:
+    """Convierte un valor a float de forma segura; retorna 0.0 si es inválido o NaN."""
     try:
         f = float(value)
         return 0.0 if math.isnan(f) else f
@@ -192,14 +267,14 @@ def _safe_float(value: Any) -> float:
 
 def get_province_data(provincia: str, mes: int) -> dict[str, Any]:
     """
-    Return the most recent export feature values for (provincia, mes).
+    Retorna los valores de features de exportación más recientes para (provincia, mes).
 
-    Row index → date mapping (from the SRI publication cadence):
-        year  = 2020 + row_idx // 12
-        month = row_idx % 12 + 1
+    Mapeo índice de fila → fecha (según cadencia de publicación del SRI):
+        año   = 2020 + índice_fila // 12
+        mes   = índice_fila % 12 + 1
 
-    For a given month we find all matching rows, pick the most recent year,
-    and extract the five export columns for the requested province.
+    Para un mes dado, encuentra todas las filas coincidentes, selecciona el año
+    más reciente y extrae las cinco columnas de exportación para la provincia solicitada.
     """
     try:
         df = _load_wide_df()
@@ -248,22 +323,37 @@ def get_province_data(provincia: str, mes: int) -> dict[str, Any]:
 def call_inference(
     provincia: str,
     mes: int,
+    ano: int,
     exportaciones_bienes_pn: float,
     exportaciones_servicios_pn: float,
     exportaciones_bienes_soc: float,
     exportaciones_servicios_soc: float,
 ) -> dict[str, Any]:
     """
-    POST to ml-inference /predict and return the response payload.
-    Returns a dict with an 'error' key on any failure.
+    Valida la fecha solicitada y hace POST a ml-inference /predict.
+
+    La validación temporal se realiza primero — si (ano, mes) está fuera de la
+    ventana de predicción válida, el servicio ML nunca es llamado y se retorna
+    un mensaje de error en español directamente al agente.
     """
+    # ── Date validation (short-circuit before any HTTP call) ─────────────────
+    date_error = validate_prediction_date(ano, mes)
+    if date_error:
+        logger.info(
+            "call_inference blocked by temporal validation: ano=%d mes=%d — %s",
+            ano, mes, date_error,
+        )
+        return {"error": date_error, "error_tipo": "fecha_fuera_de_rango"}
+
+    # ── Build payload with ano_fiscal ─────────────────────────────────────────
     payload = {
-        "provincia": provincia,
-        "mes": mes,
+        "provincia":               provincia,
+        "mes":                     mes,
+        "ano_fiscal":              ano,
         "exportaciones_bienes_pn":    exportaciones_bienes_pn,
         "exportaciones_servicios_pn": exportaciones_servicios_pn,
         "exportaciones_bienes_soc":   exportaciones_bienes_soc,
-        "exportaciones_servicios_soc":exportaciones_servicios_soc,
+        "exportaciones_servicios_soc": exportaciones_servicios_soc,
     }
     url = f"{ML_INFERENCE_URL}/predict"
 
@@ -272,8 +362,8 @@ def call_inference(
         resp.raise_for_status()
         result: dict = resp.json()
         logger.info(
-            "call_inference(%s, %d) → prediction=%.2f  model=%s  confidence=%.4f",
-            provincia, mes,
+            "call_inference(%s, %d/%d) → prediction=%.2f  model=%s  confidence=%.4f",
+            provincia, mes, ano,
             result.get("prediccion_total_ventas", 0),
             result.get("modelo_version", "?"),
             result.get("confianza", 0),
@@ -286,5 +376,5 @@ def call_inference(
     except requests.exceptions.HTTPError as exc:
         body = exc.response.text[:200] if exc.response else ""
         return {"error": f"Inference service HTTP {exc.response.status_code}: {body}"}
-    except Exception as exc:
+    except (ValueError, KeyError) as exc:
         return {"error": f"Unexpected error calling inference service: {exc}"}

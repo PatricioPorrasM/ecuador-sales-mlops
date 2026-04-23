@@ -1,26 +1,27 @@
 """
-ReActAgent: Reasoning + Acting loop for Ecuador SRI sales prediction queries.
+ReActAgent: bucle de Razonamiento + Acción para consultas de predicción de ventas del SRI Ecuador.
 
-Pattern
-───────
-Each invocation of run() executes up to MAX_ITERATIONS rounds of:
-  1. REASON  — call the LLM with current message history + available tools.
-  2. ACT     — if the LLM requested tool calls, execute them and append
-               the observations to the message history.
-  3. Repeat until the LLM returns a final message with no tool calls.
+Patrón de ejecución
+───────────────────
+Cada invocación de run() ejecuta hasta MAX_ITERATIONS rondas de:
+  1. [THINK]   — llama al LLM con el historial de mensajes y las herramientas disponibles.
+  2. [ACT]     — si el LLM solicitó llamadas a herramientas, las ejecuta y añade
+                 las observaciones al historial.
+  3. [OBSERVE] — registra los resultados de cada herramienta.
+  4. Repite hasta que el LLM devuelve un mensaje final sin llamadas a herramientas.
 
-Expected tool call sequence for a typical question:
-  iter 1 → get_province_data(provincia, mes)     [fetches CSV features]
-  iter 2 → call_inference(provincia, mes, ...)   [calls ml-inference]
-  iter 3 → final natural-language answer (no tool calls)
+Secuencia típica de herramientas:
+  iter 1 → get_province_data(provincia, mes)     [obtiene features del CSV]
+  iter 2 → call_inference(provincia, mes, ...)   [llama a ml-inference]
+  iter 3 → respuesta final en lenguaje natural (sin llamadas a herramientas)
 
-LLM gateway
+Gateway LLM
 ───────────
-LiteLLM is used as a provider-agnostic gateway.  Groq is the default
-provider (model: groq/llama3-8b-8192).  The GROQ_API_KEY env var is
-required and is picked up automatically by LiteLLM.
+LiteLLM se usa como gateway agnóstico al proveedor.  Groq es el proveedor
+predeterminado (modelo: groq/llama3-8b-8192).  La variable de entorno GROQ_API_KEY
+es obligatoria y es leída automáticamente por LiteLLM.
 
-Override the model with the LITELLM_MODEL env var, e.g.:
+Para cambiar el modelo, usar la variable LITELLM_MODEL, p.ej.:
   LITELLM_MODEL=groq/mixtral-8x7b-32768
 """
 
@@ -50,32 +51,52 @@ _SYSTEM_PROMPT = """\
 Eres un asistente especializado en análisis de ventas y exportaciones del Ecuador, \
 con acceso a datos oficiales del SRI (Servicio de Rentas Internas).
 
+CONTEXTO DEL DATASET:
+- El dataset cubre desde enero 2020 (registro 1) hasta septiembre 2025 (registro 69).
+- No existe columna de año explícita; el año se deriva del número de registro:
+    año = 2020 + (numero_registro - 1) // 12
+    mes = ((numero_registro - 1) % 12) + 1
+- El primer mes PREDECIBLE es octubre 2025 (primer mes fuera del dataset).
+- El horizonte máximo de predicción es de 12 meses: octubre 2025 — septiembre 2026.
+
 Tu misión es responder preguntas sobre predicciones de ventas de sociedades \
 siguiendo OBLIGATORIAMENTE este proceso en orden:
 
 PASO 1 — RAZONAMIENTO INICIAL
-Identifica la provincia y el mes mencionados en la pregunta. \
-Si hay ambigüedad, elige el más probable y procede.
+Identifica la provincia, el MES y el AÑO mencionados en la pregunta. \
+Si el año no se menciona explícitamente, infiere el más lógico dentro del \
+rango válido (oct 2025 — sep 2026). Si hay ambigüedad, elige el más probable.
 
-PASO 2 — HERRAMIENTA get_province_data
+PASO 2 — VALIDACIÓN TEMPORAL (OBLIGATORIA, antes de cualquier herramienta)
+Verifica mentalmente que la fecha solicitada (mes + año) sea:
+  a) Estrictamente posterior a septiembre 2025.
+  b) No superior a septiembre 2026 (12 meses desde el corte).
+Si la fecha NO cumple ambas condiciones, responde directamente en español \
+explicando el rango válido SIN llamar ninguna herramienta.
+
+PASO 3 — HERRAMIENTA get_province_data
 Usa esta herramienta para obtener los datos históricos de exportaciones \
 de la provincia y mes identificados. Son los features del modelo predictivo.
 
-PASO 3 — HERRAMIENTA call_inference
-Usa esta herramienta con los datos del paso anterior para obtener la predicción.
+PASO 4 — HERRAMIENTA call_inference
+Usa esta herramienta con: provincia, mes, AÑO (ano), y los datos del paso anterior. \
+La herramienta también valida la fecha y retornará un error si está fuera del rango.
 
-PASO 4 — RESPUESTA FINAL
+PASO 5 — RESPUESTA FINAL
 Genera una respuesta en español, profesional y contextualizada que incluya:
 • El valor predicho de ventas y exportaciones totales de sociedades
+• El mes y año de la predicción
 • Una breve interpretación del resultado (¿es alto/bajo para esa provincia?)
 • Contexto sobre la estacionalidad del mes si es relevante
 
 REGLAS OBLIGATORIAS:
 - Provincias siempre en MAYÚSCULAS al llamar herramientas
 - Los meses son números del 1 al 12
+- El año (ano) es obligatorio en call_inference
 - Responde siempre en español
 - No inventes datos; usa únicamente lo que retornan las herramientas
-- Si una herramienta retorna un error, infórmalo claramente al usuario
+- Si call_inference retorna error_tipo="fecha_fuera_de_rango", \
+  transmite el mensaje de error directamente al usuario sin reintentar
 
 Provincias válidas: AZUAY, BOLIVAR, CARCHI, CANAR, CHIMBORAZO, COTOPAXI, \
 EL ORO, ESMERALDAS, GALAPAGOS, GUAYAS, IMBABURA, LOJA, LOS RIOS, MANABI, \
@@ -125,7 +146,10 @@ class ReActAgent:
         t_start = time.perf_counter()
 
         for iteration in range(1, MAX_ITERATIONS + 1):
-            logger.info("[ReAct iter %d/%d] Calling %s", iteration, MAX_ITERATIONS, self.model)
+            razonamiento.append(
+                f"[THINK] Iteración {iteration}/{MAX_ITERATIONS}: consultando {self.model}…"
+            )
+            logger.info("[THINK] iter=%d/%d  model=%s", iteration, MAX_ITERATIONS, self.model)
             agent_llm_calls_total.inc()
 
             response = litellm.completion(
@@ -160,7 +184,10 @@ class ReActAgent:
 
             # No tool calls → LLM produced its final answer
             if not tool_calls:
-                razonamiento.append(f"[iter {iteration}] Respuesta final generada por el LLM.")
+                razonamiento.append(
+                    f"[THINK] Respuesta final generada en iteración {iteration}."
+                )
+                logger.info("[THINK] Respuesta final — iter=%d", iteration)
                 return {
                     "respuesta": msg.content or "",
                     "datos_usados": datos_usados,
@@ -177,15 +204,22 @@ class ReActAgent:
                     args: dict = json.loads(tc.function.arguments)
                 except json.JSONDecodeError:
                     args = {}
-                    logger.warning("[iter %d] Invalid JSON in tool arguments: %s", iteration, tc.function.arguments)
+                    logger.warning(
+                        "[ACT] iter=%d  tool=%s  error=JSON inválido en argumentos: %s",
+                        iteration, tool_name, tc.function.arguments,
+                    )
 
-                razonamiento.append(f"[iter {iteration}] → {tool_name}({_fmt_args(args)})")
+                razonamiento.append(f"[ACT] {tool_name}({_fmt_args(args)})")
+                logger.info("[ACT] iter=%d  tool=%s  args=%s", iteration, tool_name, _fmt_args(args))
                 agent_tool_calls_total.labels(tool_name=tool_name).inc()
 
                 observation = self._dispatch(tool_name, args)
 
-                razonamiento.append(f"[iter {iteration}] ← {tool_name}: {_fmt_result(observation)}")
-                logger.info("[iter %d] tool=%s  result_keys=%s", iteration, tool_name, list(observation.keys()))
+                razonamiento.append(f"[OBSERVE] {tool_name}: {_fmt_result(observation)}")
+                logger.info(
+                    "[OBSERVE] iter=%d  tool=%s  result_keys=%s",
+                    iteration, tool_name, list(observation.keys()),
+                )
 
                 # Capture structured results for the response envelope
                 if tool_name == "get_province_data" and "error" not in observation:
@@ -204,8 +238,13 @@ class ReActAgent:
                 })
 
         # MAX_ITERATIONS reached without a final answer
-        logger.warning("ReAct loop hit MAX_ITERATIONS=%d for question: %s", MAX_ITERATIONS, pregunta)
-        razonamiento.append(f"[WARN] Máximo de iteraciones ({MAX_ITERATIONS}) alcanzado sin respuesta final.")
+        logger.warning(
+            "[THINK] Máximo de iteraciones alcanzado — MAX_ITERATIONS=%d  pregunta=%s",
+            MAX_ITERATIONS, pregunta,
+        )
+        razonamiento.append(
+            f"[THINK] ADVERTENCIA: máximo de iteraciones ({MAX_ITERATIONS}) alcanzado sin respuesta."
+        )
         return {
             "respuesta": (
                 "Lo siento, no pude completar el análisis en el número máximo de pasos. "

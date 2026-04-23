@@ -1,25 +1,25 @@
 """
-web-ui Flask service — Conversational chat interface for Ecuador SRI sales predictions.
+Servicio Flask web-ui — interfaz de chat conversacional para predicciones de ventas del SRI Ecuador.
 
-Flow per chat request:
-  1. Validate input & extract session_id from the browser.
-  2. Publish a 'user-requests' Kafka event (best-effort).
-  3. Proxy the question to the ai-agent POST /process endpoint.
-  4. Return the agent's JSON response to the browser.
-  5. JavaScript updates the chat UI without a page reload.
+Flujo por solicitud de chat:
+  1. Valida la entrada y extrae session_id del navegador.
+  2. Publica un evento Kafka 'user-requests' (best-effort).
+  3. Reenvía la pregunta al endpoint POST /process del ai-agent.
+  4. Devuelve la respuesta JSON del agente al navegador.
+  5. JavaScript actualiza la UI del chat sin recargar la página.
 
 Endpoints
 ─────────
-  GET  /        Serve the chat HTML (index.html).
-  POST /chat    Receive question, orchestrate the flow, return JSON.
-  GET  /health  Liveness probe.
-  GET  /metrics Prometheus metrics.
+  GET  /        Sirve el HTML del chat (index.html).
+  POST /chat    Recibe la pregunta, orquesta el flujo y devuelve JSON.
+  GET  /health  Sonda de liveness.
+  GET  /metrics Métricas Prometheus.
 
-Environment variables
-─────────────────────
-  AI_AGENT_URL            Default: http://ai-agent:5001
-  AGENT_TIMEOUT_SECS      Default: 120
-  KAFKA_BOOTSTRAP_SERVERS Default: kafka:9092
+Variables de entorno
+────────────────────
+  AI_AGENT_URL            Predeterminado: http://ai-agent:5001
+  AGENT_TIMEOUT_SECS      Predeterminado: 120
+  KAFKA_BOOTSTRAP_SERVERS Predeterminado: kafka:9092
 """
 
 from __future__ import annotations

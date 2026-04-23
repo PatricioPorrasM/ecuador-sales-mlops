@@ -1,26 +1,26 @@
 """
-ai-agent Flask service — ReAct agent for Ecuador SRI sales prediction.
+Servicio Flask del ai-agent — agente ReAct para predicción de ventas del SRI Ecuador.
 
 Endpoints
 ─────────
-  POST /process   Run the ReAct agent on a natural-language question.
-  GET  /health    Liveness probe.
-  GET  /ready     Readiness probe.
-  GET  /metrics   Prometheus metrics.
+  POST /process   Ejecuta el agente ReAct sobre una pregunta en lenguaje natural.
+  GET  /health    Sonda de disponibilidad (liveness).
+  GET  /ready     Sonda de preparación (readiness).
+  GET  /metrics   Métricas Prometheus.
 
-The agent uses LiteLLM (Groq / llama3-8b-8192) to orchestrate two tools:
-  1. get_province_data  — reads historical data from the SRI CSV
-  2. call_inference     — calls the ml-inference service POST /predict
+El agente utiliza LiteLLM (Groq / llama3-8b-8192) para orquestar dos herramientas:
+  1. get_province_data  — lee datos históricos del CSV del SRI
+  2. call_inference     — llama al servicio ml-inference POST /predict
 
-Required environment variables:
-  GROQ_API_KEY            Groq API key (picked up automatically by LiteLLM)
+Variables de entorno obligatorias:
+  GROQ_API_KEY            Clave de API de Groq (leída automáticamente por LiteLLM)
 
-Optional environment variables:
-  LITELLM_MODEL           Default: groq/llama3-8b-8192
-  ML_INFERENCE_URL        Default: http://ml-inference:5000
-  DATA_PATH               Default: /app/data/Bdd_SRI_2025.csv
-  KAFKA_BOOTSTRAP_SERVERS Default: kafka:9092
-  AGENT_MAX_ITERATIONS    Default: 8
+Variables de entorno opcionales:
+  LITELLM_MODEL           Predeterminado: groq/llama3-8b-8192
+  ML_INFERENCE_URL        Predeterminado: http://ml-inference:5000
+  DATA_PATH               Predeterminado: /app/data/Bdd_SRI_2025.csv
+  KAFKA_BOOTSTRAP_SERVERS Predeterminado: kafka:9092
+  AGENT_MAX_ITERATIONS    Predeterminado: 8
 """
 
 from __future__ import annotations
@@ -55,10 +55,10 @@ _agent = ReActAgent()
 @app.post("/process")
 def process():
     """
-    Run the ReAct agent on a natural-language question about Ecuador sales.
+    Ejecuta el agente ReAct sobre una pregunta en lenguaje natural acerca de ventas en Ecuador.
 
-    Body:   {"pregunta": "¿Cuánto venderán las sociedades de Pichincha en marzo?"}
-    Returns: {respuesta, datos_usados, prediccion_raw, razonamiento}
+    Cuerpo:   {"pregunta": "¿Cuánto venderán las sociedades de Pichincha en marzo?"}
+    Retorna: {respuesta, datos_usados, prediccion_raw, razonamiento}
     """
     body: dict = request.get_json(silent=True) or {}
     pregunta: str = str(body.get("pregunta", "")).strip()
@@ -106,24 +106,24 @@ def process():
 
 @app.get("/health")
 def health():
-    """Liveness probe — always 200 while the process is alive."""
+    """Sonda de liveness — retorna 200 mientras el proceso esté activo."""
     return jsonify({"status": "ok"})
 
 
 @app.get("/ready")
 def ready():
-    """Readiness probe — 200 once the agent and tools are initialised."""
+    """Sonda de readiness — retorna 200 una vez que el agente y sus herramientas están listos."""
     return jsonify({"status": "ready", "model": _agent.model})
 
 
 @app.get("/metrics")
 def metrics():
-    """Prometheus metrics in text exposition format."""
+    """Métricas Prometheus en formato de exposición de texto."""
     return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
 
 # ─────────────────────────────────────────────────────────
-# Dev server entry point (production uses Gunicorn via Dockerfile)
+# Punto de entrada para desarrollo (producción usa Gunicorn via Dockerfile)
 # ─────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

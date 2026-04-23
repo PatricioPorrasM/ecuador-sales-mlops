@@ -1,12 +1,12 @@
 """
-Kafka producer for the web-ui service.
+Productor Kafka para el servicio web-ui.
 
-Publishes user request events to the 'user-requests' topic so downstream
-services and the kafka-consumer can observe traffic patterns and build
-audit trails per session.
+Publica eventos de solicitudes de usuario en el topic 'user-requests' para que
+los servicios posteriores y el kafka-consumer puedan observar patrones de tráfico
+y construir registros de auditoría por sesión.
 
-Degrades gracefully if Kafka is unreachable — the UI never fails because
-of a Kafka outage.
+Degrada de forma segura si Kafka no está disponible — la UI nunca falla
+por una interrupción de Kafka.
 """
 
 from __future__ import annotations
@@ -28,6 +28,10 @@ _producer: KafkaProducer | None = None
 
 
 def _get_producer() -> KafkaProducer | None:
+    """Retorna el productor en caché, creándolo en la primera llamada.
+
+    Retorna None si Kafka no está disponible.
+    """
     global _producer
     if _producer is not None:
         return _producer
@@ -41,10 +45,11 @@ def _get_producer() -> KafkaProducer | None:
             request_timeout_ms=5000,
             api_version_auto_timeout_ms=5000,
         )
-        logger.info("Kafka producer connected → %s", KAFKA_BOOTSTRAP_SERVERS)
+        logger.info("Productor Kafka conectado → %s", KAFKA_BOOTSTRAP_SERVERS)
     except (NoBrokersAvailable, KafkaError) as exc:
         logger.warning(
-            "Kafka unavailable (%s) — user request events will not be streamed.", exc
+            "Kafka no disponible (%s) — los eventos de solicitud de usuario no serán transmitidos.",
+            exc,
         )
     return _producer
 
@@ -56,8 +61,9 @@ def publish_user_request(
     user_agent: str,
 ) -> None:
     """
-    Publish a user request event. Failures are logged and silently swallowed
-    so Kafka outages never degrade the chat experience.
+    Publica un evento de solicitud de usuario en el topic 'user-requests'.
+    Los errores se registran y se descartan para que las interrupciones de Kafka
+    nunca degraden la experiencia del chat.
     """
     producer = _get_producer()
     if producer is None:
@@ -74,6 +80,6 @@ def publish_user_request(
         future = producer.send(TOPIC, value=event)
         producer.flush(timeout=2.0)
         future.get(timeout=2.0)
-        logger.debug("Published user-request event — session=%s", session_id)
+        logger.debug("Evento user-request publicado — session=%s", session_id)
     except KafkaError as exc:
-        logger.warning("Failed to publish user-request event: %s", exc)
+        logger.warning("Error al publicar evento de solicitud de usuario en Kafka: %s", exc)

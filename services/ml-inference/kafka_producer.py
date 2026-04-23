@@ -1,9 +1,10 @@
 """
-Kafka producer for streaming prediction events to the 'model-responses' topic.
+Productor Kafka para transmitir eventos de predicción al topic 'model-responses'.
 
-Design: the producer is initialised lazily on the first publish call and
-cached for reuse. If Kafka is unreachable the service degrades gracefully —
-predictions are still returned to callers, only the stream event is lost.
+Diseño: el productor se inicializa de forma diferida en la primera llamada
+y se almacena en caché para reutilización. Si Kafka no está disponible, el
+servicio degrada de forma segura — las predicciones se devuelven igualmente
+al llamador; solo se pierde el evento de streaming.
 """
 
 from __future__ import annotations
@@ -25,7 +26,10 @@ _producer: KafkaProducer | None = None
 
 
 def _get_producer() -> KafkaProducer | None:
-    """Return a cached producer, creating it on first call. Returns None if Kafka is unavailable."""
+    """Retorna el productor en caché, creándolo en la primera llamada.
+
+    Retorna None si Kafka no está disponible.
+    """
     global _producer
     if _producer is not None:
         return _producer
@@ -39,11 +43,11 @@ def _get_producer() -> KafkaProducer | None:
             request_timeout_ms=5000,
             api_version_auto_timeout_ms=5000,
         )
-        logger.info("Kafka producer connected → %s", KAFKA_BOOTSTRAP_SERVERS)
+        logger.info("Productor Kafka conectado → %s", KAFKA_BOOTSTRAP_SERVERS)
     except (NoBrokersAvailable, KafkaError) as exc:
         logger.warning(
-            "Kafka unavailable (%s) — prediction events will not be streamed. "
-            "The inference service continues operating normally.",
+            "Kafka no disponible (%s) — los eventos de predicción no serán transmitidos. "
+            "El servicio de inferencia continúa operando normalmente.",
             exc,
         )
     return _producer
@@ -53,13 +57,14 @@ def publish_prediction(
     *,
     provincia: str,
     mes: int,
+    ano_fiscal: int,
     prediccion: float,
     modelo_version: str,
     latencia_ms: float,
 ) -> None:
     """
-    Publish a prediction event to the 'model-responses' Kafka topic.
-    Failures are logged as warnings; they never propagate to the caller.
+    Publica un evento de predicción en el topic 'model-responses' de Kafka.
+    Los errores se registran como advertencias y nunca se propagan al llamador.
     """
     producer = _get_producer()
     if producer is None:
@@ -68,6 +73,7 @@ def publish_prediction(
     event = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "provincia": provincia,
+        "ano_fiscal": ano_fiscal,
         "mes": mes,
         "prediccion": prediccion,
         "modelo_version": modelo_version,
@@ -78,6 +84,6 @@ def publish_prediction(
         future = producer.send(TOPIC, value=event)
         producer.flush(timeout=2.0)
         future.get(timeout=2.0)
-        logger.debug("Published prediction event for %s/%d", provincia, mes)
+        logger.debug("Evento de predicción publicado — %s/%d", provincia, mes)
     except KafkaError as exc:
-        logger.warning("Failed to publish prediction event to Kafka: %s", exc)
+        logger.warning("Error al publicar evento de predicción en Kafka: %s", exc)

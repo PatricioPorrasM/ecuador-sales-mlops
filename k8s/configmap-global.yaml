@@ -38,6 +38,7 @@ data:
   LITELLM_MODEL: "groq/llama3-8b-8192"
   AGENT_MAX_ITERATIONS: "8"
   DATA_PATH: "/app/data/Bdd_SRI_2025.csv"
+  MAX_PREDICTION_MONTHS: "12"
 
 ---
 # ── inference namespace (ml-inference) ───────────────────────────────────────

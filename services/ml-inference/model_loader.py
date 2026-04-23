@@ -1,21 +1,22 @@
 """
-Model loader for the ml-inference service.
+Cargador de modelos para el servicio ml-inference.
 
-Loads the pickle bundle produced by the training pipeline from
-MODEL_PATH (default: /app/models/model_production.pkl).
+Carga el bundle pickle producido por el pipeline de entrenamiento desde
+MODEL_PATH (predeterminado: /app/models/model_production.pkl).
 
-The bundle schema (set by SalesModelTrainer.save_model):
+Esquema del bundle (definido por SalesModelTrainer.save_model):
   {
-    "model":          trained sklearn/XGBoost estimator,
-    "feature_cols":   list[str]  — ordered feature names expected by model.predict(),
-    "label_encoder":  LabelEncoder fitted on PROVINCES list,
+    "model":          estimador sklearn/XGBoost entrenado,
+    "feature_cols":   list[str]  — nombres de features en orden esperado por model.predict(),
+    "label_encoder":  LabelEncoder ajustado sobre la lista de provincias,
     "version":        "v1" | "v2",
-    "metrics":        dict with train_*/test_* metric values,
-    "provinces":      list[str]  — ASCII-normalised province names,
+    "metrics":        dict con valores train_*/test_*,
+    "provinces":      list[str]  — nombres de provincias normalizados a ASCII,
   }
 
-Thread safety: the module-level _bundle is written once (double-checked locking)
-and then read-only, so no lock is needed after initialisation.
+Seguridad de hilos: el _bundle a nivel de módulo se escribe una sola vez
+(bloqueo de doble verificación) y luego es solo de lectura, por lo que
+no se necesita bloqueo después de la inicialización.
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ _load_lock = threading.Lock()
 
 
 def _ascii_upper(s: str) -> str:
-    """Strip diacritics and uppercase for consistent province matching."""
+    """Elimina diacríticos y convierte a mayúsculas para comparación consistente de provincias."""
     return (
         unicodedata.normalize("NFKD", s)
         .encode("ascii", "ignore")
@@ -62,8 +63,8 @@ def _ascii_upper(s: str) -> str:
 
 def get_bundle() -> dict | None:
     """
-    Return the loaded model bundle, attempting a lazy load from disk if needed.
-    Returns None if the model file does not exist yet (training not completed).
+    Retorna el bundle del modelo cargado, intentando carga diferida desde disco si es necesario.
+    Retorna None si el archivo del modelo aún no existe (entrenamiento no completado).
     """
     global _bundle
 
@@ -93,6 +94,7 @@ def get_bundle() -> dict | None:
 
 
 def is_model_loaded() -> bool:
+    """Retorna True si el bundle del modelo ya está cargado en memoria."""
     return _bundle is not None
 
 
@@ -103,15 +105,15 @@ def is_model_loaded() -> bool:
 
 def prepare_features(bundle: dict, request_data: dict) -> np.ndarray:
     """
-    Build the (1, n_features) numpy array that model.predict() expects.
+    Construye el array numpy (1, n_features) que espera model.predict().
 
-    For v1 models the required fields are the five export columns.
-    For v2 models, mes_sin/mes_cos are computed automatically from 'mes';
-    lag_1, lag_2, rolling_mean_3, rolling_std_3 are accepted as optional
-    request body fields and default to 0.0 when omitted.  Callers should
-    provide them for accurate forecasts (e.g. from a historical lookup).
+    Para modelos v1, los campos requeridos son las cinco columnas de exportación.
+    Para modelos v2, mes_sin/mes_cos se calculan automáticamente desde 'mes';
+    lag_1, lag_2, rolling_mean_3, rolling_std_3 se aceptan como campos opcionales
+    del cuerpo de la solicitud y por defecto son 0.0 si se omiten. Los llamadores
+    deben proporcionarlos para predicciones precisas (p.ej. desde una consulta histórica).
 
-    Raises ValueError for unknown provinces or missing required fields.
+    Lanza ValueError para provincias desconocidas o campos obligatorios faltantes.
     """
     label_enc = bundle["label_encoder"]
     feature_cols: list[str] = bundle["feature_cols"]
@@ -129,6 +131,7 @@ def prepare_features(bundle: dict, request_data: dict) -> np.ndarray:
 
     feature_map: dict[str, float] = {
         "province_code":     float(province_code),
+        "ano_fiscal":        float(request_data.get("ano_fiscal", 2025.0)),
         "mes_fiscal":        float(mes),
         "exp_bienes_pn":     float(request_data.get("exportaciones_bienes_pn", 0.0)),
         "exp_servicios_pn":  float(request_data.get("exportaciones_servicios_pn", 0.0)),
@@ -154,15 +157,15 @@ def prepare_features(bundle: dict, request_data: dict) -> np.ndarray:
 
 def compute_confidence(bundle: dict, X: np.ndarray) -> float:
     """
-    Estimate prediction confidence in [0, 1].
+    Estima la confianza de la predicción en el rango [0, 1].
 
-    RandomForest (v1): weighted average of tree consensus (inverse coefficient
-    of variation across all tree predictions) and held-out test R².
-    High agreement between trees + high R² → high confidence.
+    RandomForest (v1): promedio ponderado del consenso entre árboles (inverso del
+    coeficiente de variación de todas las predicciones de árboles individuales)
+    y el R² del conjunto de prueba. Mayor acuerdo + mayor R² → mayor confianza.
 
-    XGBoost (v2): XGBoost's public API does not expose individual tree outputs
-    without going through the C++ booster, so test R² is used directly as a
-    stable proxy for overall model quality.
+    XGBoost (v2): la API pública de XGBoost no expone las salidas de árboles
+    individuales sin pasar por el booster C++, por lo que el R² de prueba se usa
+    directamente como proxy estable de la calidad general del modelo.
     """
     model = bundle["model"]
     test_r2 = max(0.0, float(bundle["metrics"].get("test_r2", 0.5)))

@@ -1,20 +1,20 @@
 """
-ml-inference Flask service — Ecuador SRI sales forecasting API.
+Servicio Flask ml-inference — API de predicción de ventas del SRI Ecuador.
 
 Endpoints
 ─────────
-  POST /predict   Run inference and return prediction + confidence.
-  GET  /health    Liveness probe (always 200 while process is alive).
-  GET  /ready     Readiness probe (200 only when model is loaded in memory).
-  GET  /metrics   Prometheus metrics in text exposition format.
+  POST /predict   Ejecuta la inferencia y retorna la predicción con su confianza.
+  GET  /health    Sonda de liveness (siempre 200 mientras el proceso esté activo).
+  GET  /ready     Sonda de readiness (200 solo cuando el modelo está cargado en memoria).
+  GET  /metrics   Métricas Prometheus en formato de exposición de texto.
 
-On each successful prediction the service:
-  1. Increments Prometheus counters / histograms.
-  2. Publishes a JSON event to the Kafka 'model-responses' topic (best-effort).
+En cada predicción exitosa el servicio:
+  1. Incrementa contadores e histogramas de Prometheus.
+  2. Publica un evento JSON en el topic 'model-responses' de Kafka (best-effort).
 
-Gunicorn is the production server (see Dockerfile CMD).  A single worker is
-used so the model stays in one process memory space; concurrency is achieved
-via --threads.
+Gunicorn es el servidor de producción (ver Dockerfile CMD). Se usa un solo worker
+para que el modelo permanezca en un único espacio de memoria de proceso;
+la concurrencia se logra mediante --threads.
 """
 
 from __future__ import annotations
@@ -80,6 +80,7 @@ def predict():
     required_fields = {
         "provincia",
         "mes",
+        "ano_fiscal",
         "exportaciones_bienes_pn",
         "exportaciones_servicios_pn",
         "exportaciones_bienes_soc",
@@ -113,15 +114,18 @@ def predict():
     model_prediction_value.labels(provincia=provincia_raw).set(prediction)
     model_confidence_score.observe(confidence)
 
+    ano_fiscal = int(data["ano_fiscal"])
+
     logger.info(
-        "Prediction — provincia=%s mes=%s value=%.2f confidence=%.4f latency=%.1fms",
-        provincia_raw, data["mes"], prediction, confidence, latency_ms,
+        "Prediction — provincia=%s ano=%d mes=%s value=%.2f confidence=%.4f latency=%.1fms",
+        provincia_raw, ano_fiscal, data["mes"], prediction, confidence, latency_ms,
     )
 
     # ── Kafka event (non-blocking, best-effort) ───────────
     publish_prediction(
         provincia=provincia_raw,
         mes=int(data["mes"]),
+        ano_fiscal=ano_fiscal,
         prediccion=prediction,
         modelo_version=bundle["version"],
         latencia_ms=latency_ms,
@@ -130,6 +134,7 @@ def predict():
     return jsonify(
         {
             "provincia": provincia_raw,
+            "ano_fiscal": ano_fiscal,
             "mes": int(data["mes"]),
             "prediccion_total_ventas": round(prediction, 2),
             "modelo_version": bundle["version"],
@@ -140,16 +145,16 @@ def predict():
 
 @app.get("/health")
 def health():
-    """Liveness probe — always 200 while the process is running."""
+    """Sonda de liveness — retorna 200 mientras el proceso esté activo."""
     return jsonify({"status": "ok"})
 
 
 @app.get("/ready")
 def ready():
     """
-    Readiness probe — 200 only when the model is loaded in memory.
-    Kubernetes will stop routing traffic here until this returns 200,
-    giving the training job time to produce model_production.pkl.
+    Sonda de readiness — retorna 200 solo cuando el modelo está cargado en memoria.
+    Kubernetes dejará de enrutar tráfico aquí hasta que esta responda 200,
+    dando tiempo al job de entrenamiento para producir model_production.pkl.
     """
     if not is_model_loaded():
         # One more attempt in case the file appeared since startup
@@ -168,7 +173,7 @@ def ready():
 
 @app.get("/metrics")
 def metrics():
-    """Prometheus metrics in text exposition format."""
+    """Métricas Prometheus en formato de exposición de texto."""
     return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
 

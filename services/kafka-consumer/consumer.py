@@ -1,8 +1,8 @@
 """
-kafka-consumer: aggregates cross-service events and exposes Prometheus metrics.
+kafka-consumer: agrega eventos entre servicios y expone métricas Prometheus.
 
-Topics consumed
-───────────────
+Topics consumidos
+─────────────────
   user-requests    {timestamp, session_id, pregunta, user_agent}
   agent-actions    {timestamp, pregunta_original, provincia_extraida,
                     mes_extraido, endpoint_construido, payload_enviado,
@@ -10,20 +10,20 @@ Topics consumed
   model-responses  {timestamp, provincia, mes, prediccion,
                     modelo_version, latencia_ms}
 
-Metrics exposed at  http://0.0.0.0:8003/metrics
-(prometheus_client's start_http_server handles the HTTP layer — no Flask needed)
+Métricas expuestas en  http://0.0.0.0:8003/metrics
+(start_http_server de prometheus_client maneja la capa HTTP — no se necesita Flask)
 
-Design notes
-────────────
-• Consumer lag is re-computed every LAG_UPDATE_SECS seconds by querying
-  end_offsets() on the assigned partitions and comparing with position().
-• pipeline_end_to_end_latency_seconds is sourced from agent-actions.latencia_agente_ms
-  because model-responses events carry no session_id for cross-topic correlation.
-  This captures the dominant cost: LLM calls + tool executions + ml-inference.
-• Graceful shutdown on SIGTERM/SIGINT: the poll loop exits after at most
-  POLL_TIMEOUT_MS milliseconds, then the consumer commits offsets and closes.
-• Connection retries with exponential back-off (capped at 60 s) let the
-  container survive Kafka startup races in docker-compose / K8s.
+Notas de diseño
+───────────────
+• El lag del consumer se recalcula cada LAG_UPDATE_SECS segundos consultando
+  end_offsets() en las particiones asignadas y comparando con position().
+• pipeline_end_to_end_latency_seconds proviene de agent-actions.latencia_agente_ms
+  ya que los eventos de model-responses no llevan session_id para correlación entre topics.
+  Captura el costo dominante: llamadas LLM + ejecuciones de herramientas + ml-inference.
+• Apagado gracioso en SIGTERM/SIGINT: el bucle de poll termina tras como máximo
+  POLL_TIMEOUT_MS milisegundos; luego el consumer confirma offsets y se cierra.
+• Reintentos de conexión con retroceso exponencial (máximo 60 s) permiten que el
+  contenedor sobreviva las condiciones de arranque de Kafka en docker-compose / K8s.
 """
 
 from __future__ import annotations
@@ -74,9 +74,10 @@ _running = True
 
 
 def _register_signals() -> None:
+    """Registra manejadores de señales SIGTERM y SIGINT para apagado gracioso."""
     def _handler(sig, _frame):
         global _running
-        logger.info("Signal %s received — initiating graceful shutdown", sig)
+        logger.info("Señal %s recibida — iniciando apagado gracioso", sig)
         _running = False
 
     signal.signal(signal.SIGTERM, _handler)
@@ -89,9 +90,9 @@ def _register_signals() -> None:
 
 def _connect(max_retries: int = 15) -> KafkaConsumer:
     """
-    Attempt to connect with exponential back-off (2 s → 60 s cap).
-    Exits the process if all retries are exhausted — the container
-    orchestrator will restart it.
+    Intenta conectar con retroceso exponencial (2 s → máximo 60 s).
+    Sale del proceso si se agotan todos los reintentos — el orquestador
+    de contenedores lo reiniciará.
     """
     delay = 2.0
     for attempt in range(1, max_retries + 1):
@@ -114,14 +115,14 @@ def _connect(max_retries: int = 15) -> KafkaConsumer:
             return consumer
         except (NoBrokersAvailable, KafkaError) as exc:
             logger.warning(
-                "Connection attempt %d/%d failed (%s) — retrying in %.0f s",
+                "Intento de conexión %d/%d fallido (%s) — reintentando en %.0f s",
                 attempt, max_retries, exc, delay,
             )
             if attempt < max_retries:
                 time.sleep(delay)
                 delay = min(delay * 1.5, 60.0)
 
-    logger.error("All Kafka connection attempts exhausted. Exiting.")
+    logger.error("Todos los intentos de conexión a Kafka agotados. Saliendo.")
     sys.exit(1)
 
 
@@ -131,9 +132,9 @@ def _connect(max_retries: int = 15) -> KafkaConsumer:
 
 def _update_lag(consumer: KafkaConsumer) -> None:
     """
-    Compute and record consumer lag for every assigned partition.
-    Lag = end_offset - current_position  (0 means fully caught up).
-    Errors are suppressed so a transient Kafka blip does not crash the loop.
+    Calcula y registra el lag del consumer para cada partición asignada.
+    Lag = end_offset - posición_actual  (0 significa completamente al día).
+    Los errores se suprimen para que un fallo transitorio de Kafka no interrumpa el bucle.
     """
     for topic in TOPICS:
         try:
@@ -161,10 +162,10 @@ def _update_lag(consumer: KafkaConsumer) -> None:
 
 def _handle_user_request(payload: dict) -> None:
     """
-    user-requests: {timestamp, session_id, pregunta, user_agent}
-    No metrics are updated here directly — province is not yet known.
-    The record is available for future cross-topic correlation if
-    session_id is added to downstream events.
+    Maneja eventos de user-requests: {timestamp, session_id, pregunta, user_agent}.
+    No se actualizan métricas directamente aquí — la provincia aún no es conocida.
+    El registro está disponible para correlación futura entre topics si
+    session_id se añade a los eventos posteriores.
     """
     logger.debug(
         "user-request — session=%s  pregunta=%r",
@@ -175,12 +176,12 @@ def _handle_user_request(payload: dict) -> None:
 
 def _handle_agent_action(payload: dict) -> None:
     """
-    agent-actions: {timestamp, provincia_extraida, latencia_agente_ms, ...}
+    Maneja eventos de agent-actions: {timestamp, provincia_extraida, latencia_agente_ms, ...}.
 
-    Updates:
-      • requests_by_provincia  — demand per province
-      • pipeline_end_to_end_latency_seconds — agent processing time as
-        the best available proxy for full pipeline latency
+    Actualiza:
+      • requests_by_provincia  — demanda por provincia
+      • pipeline_end_to_end_latency_seconds — tiempo de procesamiento del agente como
+        mejor proxy disponible de la latencia total del pipeline
     """
     provincia = str(payload.get("provincia_extraida") or "unknown").strip().upper()
     requests_by_provincia.labels(provincia=provincia).inc()
@@ -200,11 +201,11 @@ def _handle_agent_action(payload: dict) -> None:
 
 def _handle_model_response(payload: dict) -> None:
     """
-    model-responses: {timestamp, provincia, mes, prediccion, modelo_version, latencia_ms}
+    Maneja eventos de model-responses: {timestamp, provincia, mes, prediccion, modelo_version, latencia_ms}.
 
-    No additional metrics are incremented here — prediction throughput is
-    already captured by kafka_messages_consumed_total{topic='model-responses'}
-    and province demand by requests_by_provincia (sourced from agent-actions).
+    No se incrementan métricas adicionales aquí — el throughput de predicciones ya
+    está capturado por kafka_messages_consumed_total{topic='model-responses'}
+    y la demanda por provincia por requests_by_provincia (proveniente de agent-actions).
     """
     logger.debug(
         "model-response — provincia=%s  mes=%s  prediccion=%s  model=%s",
@@ -225,6 +226,7 @@ _HANDLERS: dict = {
 # ─────────────────────────────────────────────────────────
 
 def _run(consumer: KafkaConsumer) -> None:
+    """Bucle principal del consumer: procesa mensajes y actualiza métricas hasta recibir señal de parada."""
     processed = 0
     last_lag_ts = time.monotonic()
 
@@ -282,16 +284,17 @@ def _run(consumer: KafkaConsumer) -> None:
 # ─────────────────────────────────────────────────────────
 
 def main() -> None:
+    """Punto de entrada: inicia el servidor Prometheus, conecta a Kafka y ejecuta el bucle de consumo."""
     _register_signals()
 
-    logger.info("Starting Prometheus HTTP server on port %d", METRICS_PORT)
+    logger.info("Iniciando servidor HTTP de Prometheus en el puerto %d", METRICS_PORT)
     start_http_server(METRICS_PORT)
 
-    logger.info("Connecting to Kafka at %s…", KAFKA_BOOTSTRAP_SERVERS)
+    logger.info("Conectando a Kafka en %s…", KAFKA_BOOTSTRAP_SERVERS)
     consumer = _connect()
 
     _run(consumer)
-    logger.info("kafka-consumer service stopped.")
+    logger.info("Servicio kafka-consumer detenido.")
 
 
 if __name__ == "__main__":

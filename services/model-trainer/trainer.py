@@ -61,7 +61,7 @@ PROVINCES: list[str] = [
 # ─────────────────────────────────────────────────────────
 
 V1_FEATURES: list[str] = [
-    "province_code", "mes_fiscal",
+    "province_code", "ano_fiscal", "mes_fiscal",
     "exp_bienes_pn", "exp_servicios_pn",
     "exp_bienes_soc", "exp_servicios_soc",
 ]
@@ -147,6 +147,7 @@ class SalesModelTrainer:
                         "year": year,
                         "month": month,
                         "province": prov,
+                        "ano_fiscal": year,
                         "mes_fiscal": month,
                         "exp_bienes_pn": _safe_float(row.get(f"{pfx}/PERSONAS NATURALES/EXPORTACIONES DE BIENES (417)")),
                         "exp_servicios_pn": _safe_float(row.get(f"{pfx}/PERSONAS NATURALES/EXPORTACIONES DE SERVICIOS (418)")),

@@ -1,0 +1,238 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Ecuador Sales MLOps — stack completo para desarrollo local
+#
+# Uso rápido:
+#   cp .env.example .env          # editar API keys
+#   docker compose up -d          # levantar todo
+#   docker compose logs -f        # seguir logs
+#   docker compose down -v        # destruir incluyendo volúmenes
+#
+# Orden de arranque:
+#   zookeeper → kafka → kafka-init → ml-inference → ai-agent → web-ui
+#                                 → kafka-consumer
+#
+# Puertos expuestos al host:
+#   5002  — web-ui     (chat)
+#   5001  — ai-agent   (API interna)
+#   5000  — ml-inference (API interna)
+#   8003  — kafka-consumer (métricas)
+#   9090  — Prometheus
+#   3000  — Grafana    (admin/admin)
+#   29092 — Kafka (acceso desde el host)
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Infraestructura Kafka ────────────────────────────────────────────────────
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper
+    hostname: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep -q imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    restart: unless-stopped
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    hostname: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 168
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 15s
+      timeout: 15s
+      retries: 12
+      start_period: 60s
+    restart: unless-stopped
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        B=kafka:9092
+        for topic in user-requests agent-actions model-responses; do
+          kafka-topics --bootstrap-server $${B} --create --if-not-exists \
+            --topic $$topic --partitions 1 --replication-factor 1 \
+            --config retention.ms=604800000
+        done
+        echo "Topics listos."
+    restart: "no"
+
+  # ── Servicios de la aplicación ───────────────────────────────────────────────
+
+  ml-inference:
+    build:
+      context: services/ml-inference
+    container_name: ml-inference
+    hostname: ml-inference
+    ports:
+      - "5000:5000"
+    env_file: .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MODEL_PATH: /app/models/model_production.pkl
+    volumes:
+      - models-data:/app/models:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  ai-agent:
+    build:
+      context: services/ai-agent
+    container_name: ai-agent
+    hostname: ai-agent
+    ports:
+      - "5001:5001"
+    env_file: .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      ML_INFERENCE_URL: http://ml-inference:5000
+    volumes:
+      - ./data:/app/data:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+      ml-inference:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5001/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  web-ui:
+    build:
+      context: services/web-ui
+    container_name: web-ui
+    hostname: web-ui
+    ports:
+      - "5002:5002"
+    env_file: .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      AI_AGENT_URL: http://ai-agent:5001
+    depends_on:
+      kafka:
+        condition: service_healthy
+      ai-agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5002/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  kafka-consumer:
+    build:
+      context: services/kafka-consumer
+    container_name: kafka-consumer
+    hostname: kafka-consumer
+    ports:
+      - "8003:8003"
+    env_file: .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      METRICS_PORT: "8003"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── Entrenamiento (job único, no se reinicia) ────────────────────────────────
+
+  model-trainer:
+    build:
+      context: services/model-trainer
+    container_name: model-trainer
+    env_file: .env
+    environment:
+      MODEL_DIR: /app/models
+      DATA_PATH: /app/data/Bdd_SRI_2025.csv
+    volumes:
+      - models-data:/app/models
+      - ./data:/app/data:ro
+    profiles:
+      - train
+    restart: "no"
+
+  # ── Observabilidad ───────────────────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  models-data:
+  grafana-data:
+
+networks:
+  default:
+    name: mlops-network
+    driver: bridge
