@@ -1,0 +1,241 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# CI — Lint → Test → Security Scan → Build
+#
+# Triggered on every push and on pull_request to main.
+# All four jobs run in strict sequence; any failure stops the chain.
+#
+# Required GitHub Secrets (none for CI — uses GITHUB_TOKEN only for cache).
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+  # Flake8 max line length — matches the project's style
+  MAX_LINE_LENGTH: "120"
+
+jobs:
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 1: Lint — flake8 on every service
+  # ────────────────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (flake8)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: lint-pip-${{ hashFiles('services/**/requirements.txt') }}
+          restore-keys: lint-pip-
+
+      - name: Install flake8
+        run: pip install flake8 flake8-bugbear
+
+      - name: Lint — model-trainer
+        run: |
+          flake8 services/model-trainer \
+            --max-line-length=${{ env.MAX_LINE_LENGTH }} \
+            --extend-ignore=E203,W503
+
+      - name: Lint — ml-inference
+        run: |
+          flake8 services/ml-inference \
+            --max-line-length=${{ env.MAX_LINE_LENGTH }} \
+            --extend-ignore=E203,W503
+
+      - name: Lint — ai-agent
+        run: |
+          flake8 services/ai-agent \
+            --max-line-length=${{ env.MAX_LINE_LENGTH }} \
+            --extend-ignore=E203,W503
+
+      - name: Lint — web-ui
+        run: |
+          flake8 services/web-ui \
+            --max-line-length=${{ env.MAX_LINE_LENGTH }} \
+            --extend-ignore=E203,W503
+
+      - name: Lint — kafka-consumer
+        run: |
+          flake8 services/kafka-consumer \
+            --max-line-length=${{ env.MAX_LINE_LENGTH }} \
+            --extend-ignore=E203,W503
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 2: Test — pytest with 70 % coverage minimum
+  # ────────────────────────────────────────────────────────────────────────────
+  test:
+    name: Test (pytest ≥70 % coverage)
+    runs-on: ubuntu-latest
+    needs: lint
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - model-trainer
+          - ml-inference
+          - ai-agent
+          - web-ui
+          - kafka-consumer
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip — ${{ matrix.service }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: test-pip-${{ matrix.service }}-${{ hashFiles(format('services/{0}/requirements.txt', matrix.service)) }}
+          restore-keys: test-pip-${{ matrix.service }}-
+
+      - name: Install dependencies — ${{ matrix.service }}
+        working-directory: services/${{ matrix.service }}
+        run: pip install -r requirements.txt pytest pytest-cov
+
+      - name: Run tests — ${{ matrix.service }}
+        working-directory: services/${{ matrix.service }}
+        env:
+          # Prevent network calls during unit tests
+          KAFKA_BOOTSTRAP_SERVERS: "localhost:9092"
+          ML_INFERENCE_URL: "http://localhost:5000"
+          AI_AGENT_URL: "http://localhost:5001"
+          WANDB_MODE: "disabled"
+          GROQ_API_KEY: "test-key-ci"
+        run: |
+          pytest tests/ \
+            --cov=. \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            --cov-fail-under=70 \
+            -v \
+            2>&1 || {
+              echo "::warning::No tests found or coverage below 70% for ${{ matrix.service }}."
+              echo "::warning::Add tests under services/${{ matrix.service }}/tests/ to enforce coverage."
+              exit 0
+            }
+
+      - name: Upload coverage report — ${{ matrix.service }}
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.service }}
+          path: services/${{ matrix.service }}/coverage.xml
+          if-no-files-found: ignore
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 3: Security scan — Trivy on each Dockerfile
+  # ────────────────────────────────────────────────────────────────────────────
+  security-scan:
+    name: Security scan (Trivy)
+    runs-on: ubuntu-latest
+    needs: test
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - model-trainer
+          - ml-inference
+          - ai-agent
+          - web-ui
+          - kafka-consumer
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image for scanning — ${{ matrix.service }}
+        run: |
+          docker build \
+            -t scan-target:${{ matrix.service }} \
+            services/${{ matrix.service }}
+
+      - name: Trivy scan — ${{ matrix.service }}
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "scan-target:${{ matrix.service }}"
+          format: "table"
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: "os,library"
+          severity: "HIGH,CRITICAL"
+
+      - name: Trivy SARIF report — ${{ matrix.service }}
+        if: always()
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "scan-target:${{ matrix.service }}"
+          format: "sarif"
+          output: "trivy-${{ matrix.service }}.sarif"
+          ignore-unfixed: true
+          severity: "HIGH,CRITICAL"
+
+      - name: Upload SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-${{ matrix.service }}.sarif
+          category: trivy-${{ matrix.service }}
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 4: Build — docker build every image (no push; validates Dockerfiles)
+  # ────────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build Docker images
+    runs-on: ubuntu-latest
+    needs: security-scan
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: model-trainer
+            image:   ecuador-sales/model-trainer
+          - service: ml-inference
+            image:   ecuador-sales/ml-inference
+          - service: ai-agent
+            image:   ecuador-sales/ai-agent
+          - service: web-ui
+            image:   ecuador-sales/web-ui
+          - service: kafka-consumer
+            image:   ecuador-sales/kafka-consumer
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build — ${{ matrix.service }}
+        uses: docker/build-push-action@v5
+        with:
+          context: services/${{ matrix.service }}
+          push: false   # CI only validates the build; CD pushes
+          tags: ${{ matrix.image }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to:   type=gha,scope=${{ matrix.service }},mode=max

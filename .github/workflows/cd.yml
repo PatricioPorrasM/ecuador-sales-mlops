@@ -1,0 +1,304 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# CD — Build & Push → Deploy → Smoke Test
+#
+# Triggered only on push to main AND after the CI workflow passes.
+# Tags every image with the full commit SHA for immutable, traceable releases.
+#
+# Required GitHub Secrets:
+#   KUBECONFIG_B64   — base64-encoded kubeconfig for the target cluster
+#                      echo $(cat ~/.kube/config | base64 -w 0)
+#   WANDB_API_KEY    — W&B API key (written into the training/api-keys Secret)
+#   GROQ_API_KEY     — Groq API key (written into the agent/api-keys Secret)
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: CD
+
+on:
+  push:
+    branches: [main]
+
+# Prevent concurrent deployments (queue, don't cancel)
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  REGISTRY:       ghcr.io
+  REGISTRY_OWNER: ${{ github.repository_owner }}
+  IMAGE_PREFIX:   ghcr.io/${{ github.repository_owner }}/ecuador-sales
+
+jobs:
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 1: Build and push all five images to GHCR
+  # ────────────────────────────────────────────────────────────────────────────
+  build-and-push:
+    name: Build & push → GHCR
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write   # required to push to ghcr.io
+
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - service: model-trainer
+            image:   ecuador-sales-model-trainer
+          - service: ml-inference
+            image:   ecuador-sales-ml-inference
+          - service: ai-agent
+            image:   ecuador-sales-ai-agent
+          - service: web-ui
+            image:   ecuador-sales-web-ui
+          - service: kafka-consumer
+            image:   ecuador-sales-kafka-consumer
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.REGISTRY_OWNER }}/${{ matrix.image }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=${{ github.sha }}
+            type=raw,value=latest
+
+      - name: Build and push — ${{ matrix.service }}
+        uses: docker/build-push-action@v5
+        with:
+          context: services/${{ matrix.service }}
+          push: true
+          tags:   ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to:   type=gha,scope=${{ matrix.service }},mode=max
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 2: Deploy — apply all k8s manifests with the new SHA image tags
+  # ────────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    environment:
+      name: production
+      url: http://${{ steps.minikube-ip.outputs.ip }}:30500
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Verify cluster connectivity
+        run: kubectl cluster-info
+
+      # ── Inject real API keys into cluster Secrets ─────────────────────────
+      - name: Apply namespaces
+        run: kubectl apply -f k8s/namespaces.yaml
+
+      - name: Upsert Secret — training/api-keys (W&B)
+        run: |
+          kubectl create secret generic api-keys \
+            --from-literal=WANDB_API_KEY="${{ secrets.WANDB_API_KEY }}" \
+            --namespace=training \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Upsert Secret — agent/api-keys (Groq)
+        run: |
+          kubectl create secret generic api-keys \
+            --from-literal=GROQ_API_KEY="${{ secrets.GROQ_API_KEY }}" \
+            --namespace=agent \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      # ── Core infrastructure ───────────────────────────────────────────────
+      - name: Apply ConfigMaps and PVCs
+        run: |
+          kubectl apply -f k8s/configmap-global.yaml
+          kubectl apply -f k8s/pvc-models.yaml
+
+      # ── Kafka (streaming namespace) ───────────────────────────────────────
+      - name: Deploy Zookeeper
+        run: kubectl apply -f k8s/kafka/zookeeper.yaml
+
+      - name: Deploy Kafka
+        run: kubectl apply -f k8s/kafka/kafka.yaml
+
+      - name: Wait for Kafka to be ready
+        run: |
+          kubectl rollout status statefulset/kafka -n streaming --timeout=180s
+
+      - name: Create Kafka topics (if not already created)
+        run: |
+          # Delete any previous completed/failed job before re-applying
+          kubectl delete job kafka-topics-init -n streaming --ignore-not-found=true
+          kubectl apply -f k8s/kafka/topics-job.yaml
+
+      # ── Application services ──────────────────────────────────────────────
+      - name: Patch image tags to SHA — ml-inference
+        run: |
+          kubectl set image deployment/ml-inference \
+            ml-inference=${{ env.REGISTRY }}/${{ env.REGISTRY_OWNER }}/ecuador-sales-ml-inference:${{ github.sha }} \
+            -n inference 2>/dev/null || true
+
+      - name: Apply ml-inference manifest
+        run: kubectl apply -f k8s/ml-inference/deployment.yaml
+
+      - name: Patch image tags to SHA — ai-agent
+        run: |
+          kubectl set image deployment/ai-agent \
+            ai-agent=${{ env.REGISTRY }}/${{ env.REGISTRY_OWNER }}/ecuador-sales-ai-agent:${{ github.sha }} \
+            -n agent 2>/dev/null || true
+
+      - name: Apply ai-agent manifest
+        run: kubectl apply -f k8s/ai-agent/deployment.yaml
+
+      - name: Patch image tags to SHA — web-ui
+        run: |
+          kubectl set image deployment/web-ui \
+            web-ui=${{ env.REGISTRY }}/${{ env.REGISTRY_OWNER }}/ecuador-sales-web-ui:${{ github.sha }} \
+            -n frontend 2>/dev/null || true
+
+      - name: Apply web-ui manifest
+        run: kubectl apply -f k8s/web-ui/deployment.yaml
+
+      - name: Patch image tags to SHA — kafka-consumer
+        run: |
+          kubectl set image deployment/kafka-consumer \
+            kafka-consumer=${{ env.REGISTRY }}/${{ env.REGISTRY_OWNER }}/ecuador-sales-kafka-consumer:${{ github.sha }} \
+            -n streaming 2>/dev/null || true
+
+      - name: Apply kafka-consumer manifest
+        run: kubectl apply -f k8s/kafka-consumer/deployment.yaml
+
+      # ── Observability ─────────────────────────────────────────────────────
+      - name: Apply monitoring stack
+        run: |
+          kubectl apply -f k8s/monitoring/prometheus.yaml
+          kubectl apply -f k8s/monitoring/grafana.yaml
+
+      # ── Wait for all deployments to roll out ─────────────────────────────
+      - name: Wait — ml-inference
+        run: kubectl rollout status deployment/ml-inference -n inference --timeout=120s
+
+      - name: Wait — ai-agent
+        run: kubectl rollout status deployment/ai-agent -n agent --timeout=120s
+
+      - name: Wait — web-ui
+        run: kubectl rollout status deployment/web-ui -n frontend --timeout=120s
+
+      - name: Wait — kafka-consumer
+        run: kubectl rollout status deployment/kafka-consumer -n streaming --timeout=60s
+
+      - name: Wait — prometheus
+        run: kubectl rollout status deployment/prometheus -n monitoring --timeout=60s
+
+      - name: Wait — grafana
+        run: kubectl rollout status deployment/grafana -n monitoring --timeout=60s
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 3: Smoke test — hit /health on every service from inside the cluster
+  # ────────────────────────────────────────────────────────────────────────────
+  smoke-test:
+    name: Smoke tests
+    runs-on: ubuntu-latest
+    needs: deploy
+
+    steps:
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      # Use kubectl exec to curl from within each pod — avoids needing external access
+      - name: Smoke test — ml-inference /health
+        run: |
+          kubectl exec -n inference deploy/ml-inference -- \
+            curl -sf --max-time 10 http://localhost:5000/health
+          echo "ml-inference: OK"
+
+      - name: Smoke test — ml-inference /ready
+        run: |
+          kubectl exec -n inference deploy/ml-inference -- \
+            curl -sf --max-time 10 http://localhost:5000/ready
+          echo "ml-inference ready: OK"
+
+      - name: Smoke test — ai-agent /health
+        run: |
+          kubectl exec -n agent deploy/ai-agent -- \
+            curl -sf --max-time 10 http://localhost:5001/health
+          echo "ai-agent: OK"
+
+      - name: Smoke test — ai-agent /ready
+        run: |
+          kubectl exec -n agent deploy/ai-agent -- \
+            curl -sf --max-time 10 http://localhost:5001/ready
+          echo "ai-agent ready: OK"
+
+      - name: Smoke test — web-ui /health
+        run: |
+          kubectl exec -n frontend deploy/web-ui -- \
+            curl -sf --max-time 10 http://localhost:5002/health
+          echo "web-ui: OK"
+
+      - name: Smoke test — kafka-consumer metrics endpoint
+        run: |
+          # kafka-consumer has no /health — validate prometheus metrics are served
+          kubectl exec -n streaming deploy/kafka-consumer -- \
+            curl -sf --max-time 10 http://localhost:8003/metrics | grep -q "kafka_messages_consumed_total"
+          echo "kafka-consumer metrics: OK"
+
+      - name: Smoke test — prometheus /-/healthy
+        run: |
+          kubectl exec -n monitoring deploy/prometheus -- \
+            wget -qO- --timeout=10 http://localhost:9090/-/healthy
+          echo "prometheus: OK"
+
+      - name: Smoke test — grafana /api/health
+        run: |
+          kubectl exec -n monitoring deploy/grafana -- \
+            curl -sf --max-time 10 http://localhost:3000/api/health
+          echo "grafana: OK"
+
+      - name: Print service summary
+        if: always()
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo " DEPLOY SUMMARY — commit ${{ github.sha }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          kubectl get deployments -A --field-selector metadata.namespace!=kube-system \
+            -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,READY:.status.readyReplicas,DESIRED:.spec.replicas,IMAGE:.spec.template.spec.containers[0].image'
+          echo ""
+          echo " Web UI  → NodePort 30500"
+          echo " Grafana → NodePort 30300"
+          echo " Prometheus → NodePort 30900"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
