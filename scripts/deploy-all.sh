@@ -215,6 +215,13 @@ step "Monitoring (Prometheus + Grafana)"
 kubectl apply -f "$REPO_ROOT/k8s/monitoring/prometheus.yaml"
 ok "Prometheus ConfigMap, Deployment y NodePort 30900 aplicados"
 
+# ConfigMap con el JSON del dashboard (creado desde archivo fuente)
+kubectl create configmap grafana-dashboards \
+  --from-file=main-dashboard.json="$REPO_ROOT/monitoring/grafana/dashboards/main-dashboard.json" \
+  -n monitoring \
+  --dry-run=client -o yaml | kubectl apply -f -
+ok "grafana-dashboards ConfigMap aplicado"
+
 kubectl apply -f "$REPO_ROOT/k8s/monitoring/grafana.yaml"
 ok "Grafana ConfigMaps, Deployment y NodePort 30300 aplicados"
 
