@@ -43,12 +43,12 @@ spec:
             - name: KAFKA_ZOOKEEPER_CONNECT
               value: "zookeeper.streaming.svc.cluster.local:2181"
 
-            # Advertise the ClusterIP Service DNS so that ALL clients inside
-            # the cluster resolve metadata to the same stable address.
+            # Use the headless-service pod FQDN so the broker can resolve its
+            # own address (ClusterIP routing back to self fails on some CNIs).
             - name: KAFKA_LISTENERS
               value: "PLAINTEXT://0.0.0.0:9092"
             - name: KAFKA_ADVERTISED_LISTENERS
-              value: "PLAINTEXT://kafka-service.streaming.svc.cluster.local:9092"
+              value: "PLAINTEXT://kafka-0.kafka-headless.streaming.svc.cluster.local:9092"
             - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
               value: "PLAINTEXT:PLAINTEXT"
             - name: KAFKA_INTER_BROKER_LISTENER_NAME

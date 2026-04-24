@@ -94,8 +94,8 @@ def _local_promote() -> None:
     rmse_v2 = bundle_v2["metrics"]["test_rmse"]
 
     logger.info(
-        "Comparación — V1 RMSE: %,.4f  |  V2 RMSE: %,.4f  |  umbral: %.0f%%",
-        rmse_v1, rmse_v2, (1 - PROMOTION_THRESHOLD) * 100,
+        "Comparación — V1 RMSE: %s  |  V2 RMSE: %s  |  umbral: %.0f%%",
+        f"{rmse_v1:,.4f}", f"{rmse_v2:,.4f}", (1 - PROMOTION_THRESHOLD) * 100,
     )
 
     if rmse_v2 < rmse_v1 * PROMOTION_THRESHOLD:

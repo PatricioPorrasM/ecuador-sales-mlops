@@ -35,7 +35,7 @@ data:
   ML_INFERENCE_URL: "http://ml-inference.inference.svc.cluster.local:5000"
   INFERENCE_TIMEOUT_SECS: "10"
   KAFKA_BOOTSTRAP_SERVERS: "kafka-service.streaming.svc.cluster.local:9092"
-  LITELLM_MODEL: "groq/llama3-8b-8192"
+  LITELLM_MODEL: "groq/llama-3.1-8b-instant"
   AGENT_MAX_ITERATIONS: "8"
   DATA_PATH: "/app/data/Bdd_SRI_2025.csv"
   MAX_PREDICTION_MONTHS: "12"

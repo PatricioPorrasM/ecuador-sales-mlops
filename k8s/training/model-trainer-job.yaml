@@ -69,6 +69,9 @@ spec:
           volumeMounts:
             - name: models
               mountPath: /app/models
+            - name: data
+              mountPath: /app/data
+              readOnly: true
 
         # Step 2 — Train XGBoost (v2)
         - name: train-v2
@@ -98,6 +101,9 @@ spec:
           volumeMounts:
             - name: models
               mountPath: /app/models
+            - name: data
+              mountPath: /app/data
+              readOnly: true
 
       # ── Main container — compare and promote winner to production ─────────
       containers:
@@ -128,8 +134,15 @@ spec:
           volumeMounts:
             - name: models
               mountPath: /app/models
+            - name: data
+              mountPath: /app/data
+              readOnly: true
 
       volumes:
         - name: models
           persistentVolumeClaim:
             claimName: models-pvc
+        - name: data
+          hostPath:
+            path: /mnt/data/ecuador-data
+            type: Directory

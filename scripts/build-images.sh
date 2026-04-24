@@ -72,17 +72,18 @@ STATUS=$(minikube status --format='{{.Host}}' 2>/dev/null || echo "")
 [[ "$STATUS" == "Running" ]] || die "Minikube no está corriendo. Ejecuta: minikube start"
 ok "Minikube corriendo en $(minikube ip)"
 
-# ── 2. Apuntar al daemon de Minikube ──────────────────────────────────────────
-step "Configurando Docker para usar el daemon de Minikube"
+# ── 2. Verificar Docker Desktop ───────────────────────────────────────────────
+step "Verificando Docker Desktop"
 
-eval "$(minikube docker-env)"
-ok "DOCKER_HOST → ${DOCKER_HOST:-<daemon local de minikube>}"
-
-# Verificar conexión al daemon
-docker info &>/dev/null || die "No se pudo conectar al daemon Docker de Minikube"
+# En Windows con driver Docker, minikube docker-env tiene incompatibilidades de
+# versión de API. Usamos Docker Desktop para el build y minikube image load
+# para transferir las imágenes al cluster — método más fiable en Windows.
+unset DOCKER_HOST DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+docker info &>/dev/null || die "Docker Desktop no está corriendo. Inícialo antes de continuar."
+ok "Docker Desktop disponible"
 
 # ── 3. Compilar imágenes ──────────────────────────────────────────────────────
-step "Compilando imágenes"
+step "Compilando imágenes y cargándolas en Minikube"
 
 FAILED=()
 BUILT=()
@@ -105,8 +106,15 @@ build_service() {
       --label "build.service=$svc" \
       --label "build.timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       "$context"; then
-    ok "$image:latest compilada"
-    BUILT+=("$svc")
+    ok "$image:latest compilada en Docker Desktop"
+    # Cargar la imagen en el daemon de Minikube
+    if minikube image load "$image:latest"; then
+      ok "$image:latest cargada en Minikube"
+      BUILT+=("$svc")
+    else
+      warn "Falló la carga de $image:latest en Minikube"
+      FAILED+=("$svc")
+    fi
   else
     warn "Falló la compilación de $svc"
     FAILED+=("$svc")
@@ -121,20 +129,18 @@ else
   done
 fi
 
-# ── 4. Verificar que las imágenes existen ─────────────────────────────────────
-step "Verificando imágenes en el daemon de Minikube"
+# ── 4. Verificar que las imágenes existen en Minikube ────────────────────────
+step "Verificando imágenes en Minikube"
 
 ALL_OK=true
 for svc in "${BUILD_ORDER[@]}"; do
   [[ -n "$TARGET_SERVICE" && "$svc" != "$TARGET_SERVICE" ]] && continue
 
   image="${SERVICES[$svc]}"
-  if docker image inspect "$image:latest" &>/dev/null; then
-    SIZE=$(docker image inspect "$image:latest" \
-      --format='{{.Size}}' | awk '{printf "%.0f MB", $1/1048576}')
-    ok "$image:latest  ($SIZE)"
+  if minikube image ls 2>/dev/null | grep -q "$image"; then
+    ok "$image:latest  ✓ en Minikube"
   else
-    warn "$image:latest NO encontrada"
+    warn "$image:latest NO encontrada en Minikube"
     ALL_OK=false
   fi
 done
@@ -152,10 +158,8 @@ fi
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 
 echo ""
-echo "  Imágenes disponibles en el daemon de Minikube:"
-docker images --filter "label=build.service" \
-  --format "    {{.Repository}}:{{.Tag}}  ({{.Size}})" \
-  | sort
+echo "  Imágenes disponibles en Minikube:"
+minikube image ls 2>/dev/null | grep "ecuador-sales" | sort | sed 's/^/    /'
 
 echo ""
 if [[ "$ALL_OK" == true && ${#FAILED[@]} -eq 0 ]]; then
