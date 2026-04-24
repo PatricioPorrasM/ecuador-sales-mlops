@@ -79,6 +79,17 @@ spec:
               cpu: "500m"
               memory: "512Mi"
 
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+              readOnly: true
+
+      volumes:
+        - name: data
+          hostPath:
+            path: /mnt/data/ecuador-data
+            type: Directory
+
 ---
 apiVersion: v1
 kind: Service
