@@ -153,6 +153,10 @@ docker compose down -v    # destruye también los volúmenes
 
 ## Desplegar en Minikube
 
+```bash
+minikube tunnel
+```
+
 ### 1. Preparar el entorno
 
 ```bash
@@ -204,6 +208,12 @@ minikube service grafana    -n monitoring --url   # dashboards
 ```
 
 NodePorts configurados: web-ui → **30500**, Prometheus → **30900**, Grafana → **30300**
+
+-- Importante: Puestos pueden cambiar en las actualziaciones
+Web UI	http://127.0.0.1:30500
+Grafana	http://127.0.0.1:30300
+Prometheus	http://127.0.0.1:30900
+
 
 ### 5. Ejecutar el entrenamiento en K8s
 
