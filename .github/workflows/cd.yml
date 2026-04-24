@@ -96,6 +96,7 @@ jobs:
     name: Deploy to Kubernetes
     runs-on: ubuntu-latest
     needs: build-and-push
+    if: vars.DEPLOY_ENV == 'remote'
 
     environment:
       name: production
@@ -227,6 +228,7 @@ jobs:
     name: Smoke tests
     runs-on: ubuntu-latest
     needs: deploy
+    if: vars.DEPLOY_ENV == 'remote'
 
     steps:
       - name: Set up kubectl
